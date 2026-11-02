@@ -15,10 +15,11 @@ def crea_tabelle_complete():
     # --- TABELLE GIÀ ESISTENTI (Estese se necessario) ---
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS clienti (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        c.f. INTEGER PRIMARY KEY AUTOINCREMENT,
         nome TEXT NOT NULL,
         telefono TEXT NOT NULL,
-        email TEXT
+        allergie TEXT
+        intolleranze TEXT
     )""")
 
     cursor.execute("""

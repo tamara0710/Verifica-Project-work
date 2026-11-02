@@ -1,1 +1,11 @@
 pypdf>=5.0,<7.0
+langgraph
+langgraph-checkpoint-sqlite
+langchain
+langchain_ollama
+langchain-openai
+langchain-chroma
+langchain-community
+langchain-text-splitters
+pypdf
+python-dotenv

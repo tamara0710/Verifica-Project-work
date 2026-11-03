@@ -1,13 +1,13 @@
 """RAG agentico su PDF e Gestione Prenotazioni SQLite con StateGraph standard di LangGraph."""
 from pathlib import Path
-from typing import TypedDict, Annotated, Literal, Optional
+from typing import TypedDict, Annotated, Literal
 from pydantic import BaseModel, Field
-from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from config import get_llm, get_embeddings
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langgraph.graph.message import add_messages
+from langgraph.types import Command
 
 from pypdf import PdfReader                                  
 from langchain_core.documents import Document
@@ -15,7 +15,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 
 from src.database.connection import crea_tabelle_complete
-from src.database import repositories
+from src.database.repositories import (
+    verifica_disponibilita,
+    crea_prenotazione,
+    annulla_o_consulta
+)
 
 
 # 1. INIZIALIZZAZIONE DATABASE E VETTORIALE CHROMA (MENÙ)
@@ -34,55 +38,15 @@ vectorstore = Chroma.from_documents(
     embedding=get_embeddings(),
     collection_name="menu_trattoria", 
     persist_directory="./chroma_db",
-    ids=[f"chunk-{i}" for i in range(len(chunks))],   # niente duplicati se rilanci
+    ids=[f"chunk-{i}" for i in range(len(chunks))],
 )
 retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
 
-# 2. STRUMENTI PER IL DATABASE (PRENOTAZIONI)
+# 2. REGISTRAZIONE STRUMENTI DEL DATABASE (PRENOTAZIONI)
 
-@tool
-def controlla_disponibilita_tavoli(data: str, turno_id: int, persone: int) -> str:
-    """Verifica disponibilità tavoli per una data (YYYY-MM-DD), turno (1=Pranzo, 2=Cena) e numero persone."""
-    tavoli = repositories.verifica_disponibilita(data, turno_id, persone)
-    if not tavoli:
-        return f"Nessun tavolo disponibile per {persone} persone il {data} (turno {turno_id})."
-    return f"Tavolo disponibile trovato (ID Tavolo: {tavoli[0][0]}, Zona: {tavoli[0][2]})."
-
-@tool
-def salva_prenotazione(nome: str, telefono: str, data: str, turno_id: int, persone: int, email: Optional[str] = None, note: Optional[str] = "", celiachia: bool = False) -> str:
-    """Registra e salva una prenotazione nel database della trattoria.
-    
-    Parametri:
-    - nome: Il nome del cliente.
-    - telefono: Il recapito telefonico.
-    - data: Data della prenotazione in formato YYYY-MM-DD.
-    - turno_id: ID del turno (1=Pranzo, 2=Cena).
-    - persone: Numero di coperti (da 1 a 12).
-    - email: Facoltativa, indirizzo email del cliente.
-    - note: Facoltative, richieste speciali o intolleranze generiche.
-    - celiachia: Impostare su True se è presente almeno una persona celiaca.
-    """
-    tavoli = repositories.verifica_disponibilita(data, turno_id, persone)
-    if not tavoli:
-        return "Impossibile prenotare: nessun tavolo libero."
-    
-    cliente_id = repositories.trova_o_crea_cliente(nome, telefono, email)
-    acconto = (persone * 10.0) if persone > 8 else 0.0
-    testo_note = note if note is not None else ""
-    prenotazione_id = repositories.inserisci_prenotazione(
-        cliente_id, tavoli[0][0], turno_id, data, persone, testo_note, 1 if celiachia else 0, acconto
-    )
-    return f"Prenotazione confermata con ID #{prenotazione_id} a nome di {nome} per {persone} persone."
-
-tools_db = [controlla_disponibilita_tavoli, salva_prenotazione]
+tools_db = [verifica_disponibilita, crea_prenotazione, annulla_o_consulta]
 tools_map = {t.name: t for t in tools_db}
-
-@tool
-def cerca_menu(query: str) -> str:
-    """Cerca nel menu della Trattoria Nonna Rosa: piatti, ingredienti, prezzi, allergeni e intolleranze."""
-    risultati = retriever.invoke(query)
-    return "\n\n".join(f"[pag. {d.metadata.get('page', 0) + 1}] {d.page_content}" for d in risultati)
 
 
 # 3. STATO E MODELLI DI STRUTTURAZIONE
@@ -101,7 +65,7 @@ class State(TypedDict):
 
 class ClassificaIntento(BaseModel):
     intento: Literal["menu", "prenotazione"] = Field(
-        description="Classifica se la richiesta riguarda il menù/cibo ('menu') oppure prenotazioni/disponibilità tavoli ('prenotazione')."
+        description="Classifica se la richiesta riguarda il menù/cibo ('menu') oppure prenotazioni/disponibilità/annullamenti tavoli ('prenotazione')."
     )
 
 class Giudizio(BaseModel):
@@ -118,11 +82,21 @@ def classifica_intento(state: State) -> dict:
     res = classifier.invoke(
         f"Analizza la richiesta dell'utente e stabilisci l'intento ('menu' o 'prenotazione'):\n\n{state['domanda']}"
     )
+    print("\n" + "="*50)
+    print("🧠 CLASSIFICAZIONE INTENTO DALL'LLM")
+    print("="*50)
+    print(f"🎯 Intento rilevato: '{res.intento}'")
+    print("-" * 50)
     return {"intento": res.intento}
 
 def recupera(state: State) -> dict:
     q = state.get("query") or state["domanda"]
-    return {"documenti": [d.page_content for d in retriever.invoke(q)]}
+    print("\n🔍 RAG: Recupero documenti da Chroma Vectorstore...")
+    print(f"📥 Query di ricerca: '{q}'")
+    docs_estrattti = retriever.invoke(q)
+    print(f"📄 Documenti trovati: {len(docs_estrattti)} chunk")
+    print("-" * 50)
+    return {"documenti": [d.page_content for d in docs_estrattti]}
 
 def valuta(state: State) -> dict:
     g = grader.invoke(
@@ -130,35 +104,20 @@ def valuta(state: State) -> dict:
         f"Documenti: {state['documenti']}\n"
         "Valuta se i documenti estratti consentono di rispondere adeguatamente alla domanda."
     )
+    print(f"⚖️ Valutazione Pertinenza Documenti: {g.pertinente}")
+    print("-" * 50)
     return {"pertinente": g.pertinente}
 
 def riscrivi(state: State) -> dict:
     q = llm.invoke(
         f"Riformula come query di ricerca breve focalizzata su piatti, ingredienti o allergeni del menu: {state['domanda']}"
     ).content
+    print(f"🔄 Riformulazione Query RAG: '{q}'")
+    print("-" * 50)
     return {"query": q, "tentativi": state.get("tentativi", 0) + 1}
 
 def genera(state: State) -> dict:
     ctx = "\n\n".join(state["documenti"])
-    # prompt = (
-    #     "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
-    #     "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sul seguente testo estratto dal menu.\n\n"
-    #     "REGOLE RIGIDE:\n"
-    #     "1. Per domande su ALLERGENI e INTOLLERANZE: riporta solo ed esclusivamente ciò che è esplicitamente indicato nel testo.\n"
-    #     "2. Non fare supposizioni o inferenze basate su ricette tradizionali se l'allergene non è scritto chiaramente nel testo fornito.\n"
-    #     "3. Se l'informazione sull'allergene non è specificata nel testo, dichiara chiaramente che nel menu non viene specificata.\n\n"
-    #     f"--- CONTESTO ESTRATTO DAL MENU ---\n{ctx}\n-----------------------------------\n\n"
-    #     f"Domanda: {state['domanda']}"
-    # )
-#     prompt = (
-    #     "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
-    #     "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sul testo del menu fornito.\n"
-    #     "Controlla attentamente la colonna 'Allergeni' prima di rispondere.\n"
-    #     "Se un piatto ha scritto '(senza glutine)' nel nome o non presenta 'glutine' tra gli allergeni, indicalo chiaramente.\n"
-    #     "Non inventare ingredienti.\n\n"
-    #     f"--- CONTESTO ESTRATTO DAL MENU ---\n{ctx}\n-----------------------------------\n\n"
-    #     f"Domanda: {state['domanda']}"
-#     ) 
     prompt = (
         "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
         "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sul testo del menu fornito sotto.\n\n"
@@ -181,22 +140,48 @@ def non_so(state: State) -> dict:
 def gestisci_prenotazione(state: State) -> dict:
     """Invoca l'LLM collegato ai tool del DB ed esegue le operazioni SQL necessarie."""
     llm_with_tools = llm.bind_tools(tools_db)
+    
+    # SYSTEM PROMPT DIRETTIVO E RIGIDO
     prompt = (
-        "Sei l'assistente virtuale della Trattoria Nonna Rosa per la gestione delle prenotazioni.\n"
-        "Usa gli strumenti a disposizione per verificare i tavoli o completare la prenotazione nel DB.\n"
-        "Turni validi: 1 = Pranzo (12:30), 2 = Cena.\n"
-        "Se mancano dettagli obbligatori (nome, telefono, data YYYY-MM-DD, turno, numero persone), richiedili al cliente."
+        "Sei l'assistente virtuale della Trattoria Nonna Rosa per la gestione delle prenotazioni.\n\n"
+        "ISTRUZIONI OBBLIGATORIE PER LA SCELTA DEGLI STRUMENTI:\n"
+        "1. Se il cliente chiede di PRENOTARE / CREARE una prenotazione e ti ha fornito i 5 dati fondamentali "
+        "(Nome, Telefono, Data YYYY-MM-DD, Turno ID 1 o 2, Numero Persone), DEVI CHIAMARE TASSATIVAMENTE 'crea_prenotazione'.\n"
+        "   - NON chiamare 'verifica_disponibilita': il tool 'crea_prenotazione' fa già il controllo di disponibilità da solo!\n"
+        "2. Usa 'verifica_disponibilita' ESCLUSIVAMENTE se la domanda è solo informativa (es. 'C'è posto per 4 persone domani?').\n"
+        "3. Usa 'annulla_o_consulta' solo se il cliente vuole vedere o cancellare sue prenotazioni esistenti.\n\n"
+        "MAPPATURA TURNI: 1 = Pranzo (12:30), 2 = Cena.\n"
+        "Se mancano dati obbligatori per completare la prenotazione, NON usare strumenti e chiedi i dati mancanti all'utente."
     )
     msg = llm_with_tools.invoke([SystemMessage(content=prompt), HumanMessage(content=state["domanda"])])
     
     # Se l'LLM seleziona uno o più tool per interagire con il DB
     if msg.tool_calls:
+        print("\n" + "="*50)
+        print("🛠️  TOOL CALLING RILEVATA DALL'LLM (DATABASE)")
+        print("="*50)
+        
         esiti = []
         for call in msg.tool_calls:
-            tool_func = tools_map[call["name"]]
-            esiti.append(tool_func.invoke(call["args"]))
+            nome_tool = call["name"]
+            argomenti = call["args"]
+            
+            # --- STAMPA A TERMINALE DEL TOOL USATO E DEI PARAMETRI ---
+            print(f"🔧 Tool invocato: {nome_tool}")
+            print(f"📥 Argomenti passati: {argomenti}")
+            
+            tool_func = tools_map[nome_tool]
+            
+            # Nota: poiché crea_prenotazione contiene un interrupt(),
+            # l'esecuzione scatenerà l'interruzione di LangGraph per la conferma.
+            esito = tool_func.invoke(argomenti)
+            
+            print(f"📤 Risultato del Tool: {esito}")
+            print("-" * 50)
+            
+            esiti.append(esito)
         
-        # Genera la risposta finale all'utente sintetizzando il risultato della query SQL
+        # Genera la risposta finale all'utente sintetizzando il risultato dell'operazione
         risposta_finale = llm.invoke(
             f"Domanda utente: {state['domanda']}\n"
             f"Esito operazione Database: {' | '.join(esiti)}\n\n"
@@ -204,6 +189,8 @@ def gestisci_prenotazione(state: State) -> dict:
         ).content
         return {"risposta": risposta_finale}
     
+    # Se l'LLM risponde direttamente senza usare tool
+    print("\nℹ️  Nessun tool invocato per questa richiesta.")
     return {"risposta": msg.content}
 
 
@@ -220,16 +207,6 @@ def instrada_valutazione(state: State) -> str:
     return "riscrivi" if state.get("tentativi", 0) < 2 else "non_so"
 
 builder = StateGraph(State)
-# for n, f in [("recupera", recupera), ("valuta", valuta), ("riscrivi", riscrivi),
-#              ("genera", genera), ("non_so", non_so)]:
-#     builder.add_node(n, f)
-# builder.add_edge(START, "recupera")
-# builder.add_edge("recupera", "valuta")
-# builder.add_conditional_edges("valuta", instrada, ["genera", "riscrivi", "non_so"])
-# builder.add_edge("riscrivi", "recupera")
-# builder.add_edge("genera", END)
-# builder.add_edge("non_so", END)
-# graph = builder.compile()
 
 # Registrazione Nodi
 builder.add_node("classifica_intento", classifica_intento)
@@ -259,35 +236,34 @@ memory = MemorySaver()
 graph = builder.compile(checkpointer=memory)
 
 
-# if __name__ == "__main__":
-#     config = {"configurable": {"thread_id": "tavolo_1"}}
-
-#     # Prima domanda
-#     domanda_1 = "Ci sono primi piatti nel menu?"
-#     print(f"=== DOMANDA 1: {domanda_1} ===")
-#     risultato_1 = graph.invoke({"domanda": domanda_1}, config=config)
-#     print(f"Risposta 1:\n{risultato_1['risposta']}\n")
-
-#     # Seconda domanda (fa riferimento contestuale alla prima)
-#     domanda_2 = "Quali di questi contengono allergeni indicati nel menu?"
-#     print(f"=== DOMANDA 2: {domanda_2} ===")
-#     risultato_2 = graph.invoke({"domanda": domanda_2}, config=config)
-#     print(f"Risposta 2:\n{risultato_2['risposta']}\n")
-
-
 # 6. TEST ESECUZIONE
+
+# 6. TEST ESECUZIONE (CON GESTIONE INTERRUPT)
 
 if __name__ == "__main__":
     config = {"configurable": {"thread_id": "sessione_tavolo_1"}}
 
-    # Test 1: Query Menù (Ramo CRAG)
-    domanda_1 = "Quali primi senza glutine ci sono?"
-    print(f"=== TEST 1 (MENÙ): {domanda_1} ===")
+    domanda_1 = "Ciao, mi chiamo Mario Rossi, voglio inserire una prenotazione per 2 persone per il 2026-11-10 a pranzo (turno 1), il mio numero è 3295680987"
+    print(f"=== TEST PRENOTAZIONE DB: {domanda_1} ===")
+    
+    # 1. Prima invocazione del grafo
     r1 = graph.invoke({"domanda": domanda_1}, config=config)
-    print(f"Risposta 1:\n{r1['risposta']}\n")
+    
+    # 2. Controlliamo se il grafo si è fermato all'interrupt
+    stato = graph.get_state(config)
+    
+    if stato.next:
+        # Recuperiamo i dati passati dall'interrupt di crea_prenotazione
+        dati_interrupt = stato.tasks[0].interrupts[0].value
+        print("\n" + "="*50)
+        print("⏸️  INTERRUPT ATTIVATO (Richiesta conferma)")
+        print("="*50)
+        print(f"📋 Dettagli: {dati_interrupt}")
+        print("\n✅ Risposta utente all'interrupt: 'True' (Confermo)")
+        print("-" * 50)
+        
+        # 3. Riprendiamo l'esecuzione passando la conferma (resume=True)
+        r1 = graph.invoke(Command(resume=True), config=config)
 
-    # # Test 2: Inserimento Prenotazione (Ramo DB SQLite)
-    # domanda_2 = "Vorrei prenotare un tavolo per 4 persone il 2026-11-14 per il pranzo (turno 1). Nome: Mario Rossi, tel: 3331234567. Tra noi c'è una persona celiaca."
-    # print(f"=== TEST 2 (PRENOTAZIONE DB): {domanda_2} ===")
-    # r2 = graph.invoke({"domanda": domanda_2}, config=config)
-    # print(f"Risposta 2:\n{r2['risposta']}\n")
+    # 4. Ora r1['risposta'] contiene l'esito finale dell'INSERT
+    print(f"\n💬 Risposta finale:\n{r1['risposta']}\n")

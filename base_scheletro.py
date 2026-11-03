@@ -107,6 +107,7 @@ builder.add_edge("genera", END)
 builder.add_edge("non_so", END)
 graph = builder.compile()
 
+<<<<<<< HEAD
 # if __name__ == "__main__":
 #     config = {"configurable": {"thread_id": "tavolo_1"}}
     
@@ -114,6 +115,10 @@ graph = builder.compile()
 #     risultato = graph.invoke({"domanda": domanda_test}, config=config)
     
 #     print(f"Risposta: {risultato['risposta']}")
+=======
+if __name__ == "__main__":
+    print(graph.invoke({"domanda": "Qualli primi ci sono nel menu?"})["risposta"])
+>>>>>>> Tamara.db
 
 if __name__ == "__main__":
     config = {"configurable": {"thread_id": "tavolo_1"}}

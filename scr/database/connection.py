@@ -35,24 +35,74 @@ def crea_tabelle_complete():
         orario TEXT NOT NULL
     )""")
 
-    # --- NUOVE TABELLE PER IL MENÙ ---
+    # --- TABELLE PER LE CATEGORIE DEL MENÙ ---
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS categorie_menu (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nome TEXT NOT NULL UNIQUE -- 'Antipasti', 'Primi', 'Secondi', 'Dolci'
+    CREATE TABLE IF NOT EXISTS antipasti (
+        codice TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        prezzo REAL NOT NULL CHECK (prezzo >= 0),
+        allergeni TEXT NOT NULL
     )""")
 
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS piatti (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        categoria_id INTEGER NOT NULL,
+    INSERT OR IGNORE INTO antipasti (codice, nome, prezzo, allergeni)
+    VALUES
+        ('A01', 'Tagliere di salumi e formaggi pugliesi', 14.00, 'latte'),
+        ('A02', 'Burrata con pomodorini e crostini', 10.00, 'latte, glutine'),
+        ('A03', 'Polpo arrosto su crema di fave', 13.00, 'molluschi'),
+        ('A04', 'Verdure grigliate (vegano)', 8.00, '-')
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS primi (
+        codice TEXT PRIMARY KEY,
         nome TEXT NOT NULL,
         prezzo REAL NOT NULL CHECK (prezzo >= 0),
-        allergeni TEXT, -- Es: 'latte, glutine'
-        is_vegano INTEGER NOT NULL DEFAULT 0, -- 1 se vegano, 0 altrimenti
-        is_senza_glutine INTEGER NOT NULL DEFAULT 0, -- 1 se senza glutine
-        FOREIGN KEY (categoria_id) REFERENCES categorie_menu(id) ON DELETE RESTRICT
+        allergeni TEXT NOT NULL
     )""")
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO primi (codice, nome, prezzo, allergeni)
+    VALUES
+        ('P01', 'Orecchiette alle cime di rapa', 11.00, 'glutine, pesce (acciughe)'),
+        ('P02', 'Spaghetti all''assassina', 12.00, 'glutine'),
+        ('P03', 'Cavatelli con cozze e fagioli', 14.00, 'glutine, molluschi'),
+        ('P04', 'Risotto ai funghi cardoncelli (senza glutine)', 13.00, 'latte')
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS secondi (
+        codice TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        prezzo REAL NOT NULL CHECK (prezzo >= 0),
+        allergeni TEXT NOT NULL
+    )
+""")
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO secondi (codice, nome, prezzo, allergeni)
+    VALUES
+        ('S01', 'Bombette di Cisternino', 15.00, 'latte'),
+        ('S02', 'Orata al forno con patate', 18.00, 'pesce'),
+        ('S03', 'Polpette al sugo della nonna', 13.00, 'uova, glutine, latte'),
+        ('S04', 'Parmigiana di melanzane (vegetariano)', 12.00, 'latte, uova, glutine')
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS dolci (
+        codice TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        prezzo REAL NOT NULL CHECK (prezzo >= 0),
+        allergeni TEXT NOT NULL
+    )""")
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO dolci (codice, nome, prezzo, allergeni)
+    VALUES
+        ('D01', 'Pasticciotto leccese', 5.00, 'glutine, uova, latte'),
+        ('D02', 'Tiramisù', 6.00, 'uova, latte, glutine'),
+        ('D03', 'Sorbetto al limone (vegano)', 4.00, '-')
+    """)
 
     # --- PRENOTAZIONI AGGIORNATE (con Acconto e Celiachia) ---
     cursor.execute("""
@@ -74,7 +124,6 @@ def crea_tabelle_complete():
 
     # Indici
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_prenotazioni_data_turno ON prenotazioni(data, turno_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_piatti_categoria ON piatti(categoria_id)")
 
     conn.commit()
     conn.close()

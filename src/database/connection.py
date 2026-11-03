@@ -122,6 +122,25 @@ def crea_tabelle_complete():
         FOREIGN KEY (turno_id) REFERENCES turni(id) ON DELETE RESTRICT
     )""")
 
+    # Inserimento dei turni validi
+    cursor.execute("""
+    INSERT OR IGNORE INTO turni (id, nome, orario)
+    VALUES 
+        (1, 'Pranzo', '12:30'),
+        (2, 'Cena', '19:30')
+    """)
+
+    # Inserimento di un set di tavoli di esempio che rispettino la capienza (es. 40 interni, 20 dehors)
+    cursor.execute("""
+    INSERT OR IGNORE INTO tavoli (id, posti, zona)
+    VALUES 
+        (1, 4, 'Interno'),
+        (2, 2, 'Interno'),
+        (3, 6, 'Interno'),
+        (4, 4, 'Dehors'),
+        (5, 8, 'Interno')
+    """)
+
     # Indici
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_prenotazioni_data_turno ON prenotazioni(data, turno_id)")
 

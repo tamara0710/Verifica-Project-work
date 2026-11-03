@@ -18,6 +18,23 @@ CREATE TABLE IF NOT EXISTS clienti (
     telefono TEXT NOT NULL UNIQUE
 );
 
+CREATE TABLE IF NOT EXISTS antipasti (
+    codice TEXT PRIMARY KEY,
+    nome TEXT NOT NULL,
+    prezzo REAL NOT NULL CHECK (prezzo >= 0),
+    allergeni TEXT NOT NULL
+);
+
+INSERT INTO antipasti (codice, nome, prezzo, allergeni)
+VALUES ('A01', 'Tagliere di salumi e formaggi pugliesi', 14.00, 'latte');
+
+CREATE TABLE IF NOT EXISTS primi (
+    codice TEXT PRIMARY KEY,
+    nome TEXT NOT NULL,
+    prezzo REAL NOT NULL CHECK (prezzo >= 0),
+    allergeni TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS prenotazioni (
     id INTEGER PRIMARY KEY,
     cliente_id INTEGER NOT NULL,

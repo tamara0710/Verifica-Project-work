@@ -92,5 +92,5 @@ builder.add_edge("non_so", END)
 graph = builder.compile()
 
 if __name__ == "__main__":
-    print(graph.invoke({"domanda": "Ci sono opzioni senza glutine?"})["risposta"])
+    print(graph.invoke({"domanda": "Qualli primi ci sono nel menu?"})["risposta"])
 

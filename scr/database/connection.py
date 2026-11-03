@@ -21,6 +21,36 @@ def crea_tabelle_complete():
         email TEXT
     )""")
 
+        # Clienti di esempio: nomi e recapiti fittizi.
+    clienti_esempio = [
+        ("Anna Rossi", "3912345678", "anna@example.com"),
+        ("Marco Bianchi", "3987654321", "marco@example.com"),
+        ("Giulia Verdi", "3955555555", "giulia@example.com"),
+        ("Luca Esposito", "3966666666", "luca@example.com"),
+    ]
+
+    for nome, telefono, email in clienti_esempio:
+        cursor.execute("""
+            INSERT INTO clienti (nome, telefono, email)
+            SELECT ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM clienti WHERE telefono = ?
+            )
+        """, (nome, telefono, email, telefono))
+
+        tavoli_esempio = [
+        (2, 2, "Interno"),
+        (3, 4, "Interno"),
+        (4, 6, "Interno"),
+        (5, 4, "Dehors"),
+        (6, 8, "Dehors"),
+    ]
+
+    cursor.executemany("""
+        INSERT OR IGNORE INTO tavoli (id, posti, zona)
+        VALUES (?, ?, ?)
+    """, tavoli_esempio)
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS tavoli (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,6 +64,16 @@ def crea_tabelle_complete():
         nome TEXT NOT NULL,
         orario TEXT NOT NULL
     )""")
+
+    turni_esempio = [
+        (2, "Cena primo turno", "19:30"),
+        (3, "Cena secondo turno", "21:30"),
+    ]
+
+    cursor.executemany("""
+        INSERT OR IGNORE INTO turni (id, nome, orario)
+        VALUES (?, ?, ?)
+    """, turni_esempio)
 
     # --- TABELLE PER LE CATEGORIE DEL MENÙ ---
     cursor.execute("""
@@ -122,6 +162,34 @@ def crea_tabelle_complete():
         FOREIGN KEY (turno_id) REFERENCES turni(id) ON DELETE RESTRICT
     )""")
 
+    # Prenotazioni di esempio: sono cliente, tavolo e turno con ID 1.
+    # Non vengono duplicate alle esecuzioni successive.
+    prenotazioni_esempio = [
+        ('2026-11-10', 'confermata', 'Preferisce un tavolo in una zona tranquilla'),
+        ('2026-11-11', 'confermata', 'Preferisce un tavolo nel Dehors, se disponibile'),
+        ('2026-11-12', 'disdetta', 'Preferisce un tavolo lontano dalla porta di ingresso'),
+    ]
+
+    for data, stato, preferenza in prenotazioni_esempio:
+        cursor.execute("""
+            INSERT INTO prenotazioni
+                (cliente_id, tavolo_id, turno_id, data, persone, note, stato)
+            SELECT 1, 1, 1, ?, 2, ?, ?
+            WHERE EXISTS (SELECT 1 FROM clienti WHERE id = 1)
+              AND EXISTS (SELECT 1 FROM tavoli WHERE id = 1)
+              AND EXISTS (SELECT 1 FROM turni WHERE id = 1)
+              AND NOT EXISTS (
+                  SELECT 1 FROM prenotazioni
+                  WHERE cliente_id = 1 AND tavolo_id = 1 AND turno_id = 1
+                    AND data = ? AND persone = 2 AND stato = ?
+              )
+        """, (data, preferenza, stato, data, stato))
+        # Completa anche gli esempi gia inseriti senza note.
+        cursor.execute("""
+            UPDATE prenotazioni SET note = ?
+            WHERE cliente_id = 1 AND tavolo_id = 1 AND turno_id = 1
+              AND data = ? AND persone = 2 AND stato = ? AND note IS NULL
+        """, (preferenza, data, stato))
     # Indici
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_prenotazioni_data_turno ON prenotazioni(data, turno_id)")
 
@@ -130,3 +198,4 @@ def crea_tabelle_complete():
     print("Schema esteso con successo!")
 
 crea_tabelle_complete()
+

@@ -92,5 +92,10 @@ builder.add_edge("non_so", END)
 graph = builder.compile()
 
 if __name__ == "__main__":
-    print(graph.invoke({"domanda": "Qualli primi ci sono nel menu?"})["risposta"])
-
+    print(graph.invoke({
+        "domanda": (
+            "Vorrei prenotare per 2 persone il 10 novembre 2026, "
+            "nel turno 1. Preferirei un tavolo vicino alla finestra. "
+            "Puoi verificare la disponibilità?"
+        )
+    }))

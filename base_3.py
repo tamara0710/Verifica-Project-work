@@ -30,36 +30,6 @@ from src.utils import da_pdf_a_md, carica_md_in_vectorstore, carica_md_in_vector
 
 # 1. INIZIALIZZAZIONE DB, CAG E PERSISTENZA
 
-# BASE_DIR = Path(__file__).parent
-# PATH_INFO = BASE_DIR / "data" / "info_trattoria.md"
-# PATH_STORE = BASE_DIR / "src" / "database" / "store.sqlite"
-# PATH_CHECKPOINTS = BASE_DIR / "src" / "database" / "checkpoints.sqlite"
-
-# # Creazione cartelle
-# PATH_STORE.parent.mkdir(parents=True, exist_ok=True)
-# PATH_CHECKPOINTS.parent.mkdir(parents=True, exist_ok=True)
-
-# # Configurazione Store SQLite (con timeout 20s)
-# store_conn = sqlite3.connect(str(PATH_STORE), check_same_thread=False, timeout=20.0)
-# store_conn.execute("PRAGMA journal_mode=WAL;")
-# store = SqliteStore(store_conn)
-# store.setup()
-
-# # Configurazione Checkpointer SQLite (con timeout 20s)
-# sqlite_conn = sqlite3.connect(str(PATH_CHECKPOINTS), check_same_thread=False, timeout=20.0)
-# sqlite_conn.execute("PRAGMA journal_mode=WAL;")
-# checkpointer = SqliteSaver(sqlite_conn)
-# checkpointer.setup()
-
-# RIMOSSO: store = InMemoryStore() per non sovrascrivere lo SqliteStore
-
-
-# PATH_STORE = BASE_DIR / "src" / "database" / "store.sqlite"
-# PATH_STORE.parent.mkdir(parents=True, exist_ok=True)
-# store_conn = sqlite3.connect(str(PATH_STORE), check_same_thread=False, timeout=20.0)
-# store = SqliteStore(store_conn)
-# store.setup()
-
 BASE_DIR = Path(__file__).parent
 PATH_INFO = BASE_DIR / "data" / "info_trattoria.md"
 
@@ -75,10 +45,6 @@ PATH_TRATTORIA.parent.mkdir(parents=True, exist_ok=True)
 crea_tabelle_complete()
 
 # 3. INIZIALIZZAZIONE STORE SQLITE (Memoria Cross-Conversazione / Allergie)
-# store_conn = sqlite3.connect(str(PATH_STORE), check_same_thread=False, timeout=20.0)
-# store_conn.execute("PRAGMA journal_mode=WAL;")
-# store = SqliteStore(store_conn)
-# store.setup()
 store_conn = sqlite3.connect(
     str(PATH_STORE), 
     check_same_thread=False, 
@@ -99,10 +65,6 @@ checkpointer.setup()
 da_pdf_a_md()
 retriever = carica_md_in_vectorstore_con_ParentDocumentRetriever()
 
-#da_pdf_a_md()
-#crea_tabelle_complete()
-#retriever = carica_md_in_vectorstore_con_ParentDocumentRetriever()
-
 def carica_info_cag() -> str:
     if PATH_INFO.exists():
         return PATH_INFO.read_text(encoding="utf-8")
@@ -110,15 +72,6 @@ def carica_info_cag() -> str:
     return ""
 
 CONTESTO_CAG = carica_info_cag()
-
-# # Configurazione checkpointer SQLite (Facoltativo +5 pt: la chat riprende dopo il riavvio)
-# PATH_CHECKPOINTS.parent.mkdir(parents=True, exist_ok=True)
-# sqlite_conn = sqlite3.connect(str(PATH_CHECKPOINTS), check_same_thread=False)
-# checkpointer = SqliteSaver(sqlite_conn)
-# checkpointer.setup()
-
-# # Configurazione Store (Facoltativo +5 pt: allergie del cliente ricordate tra conversazioni diverse)
-# store = InMemoryStore()
 
 
 # 2. I 4 STRUMENTI RICHIESTI DALLA TRACCIA (Obbligatori: cerca_menu, verifica_disponibilita, crea_prenotazione, annulla_o_consulta)
@@ -146,6 +99,55 @@ tools_map["salva_prenotazione"] = crea_prenotazione
 tools_map["controlla_disponibilita_tavoli"] = verifica_disponibilita
 
 
+# def sanifica_argomenti_tool(nome_tool: str, argomenti: dict) -> dict:
+#     """Normalizza e sanifica i tipi dei parametri prima dell'invocazione del tool."""
+#     args = dict(argomenti)
+
+#     # Normalizzazione chiavi frequenti
+#     if "data_prenotazione" in args and "data" not in args:
+#         args["data"] = args.pop("data_prenotazione")
+#     if "numero_persone" in args and "persone" not in args:
+#         args["persone"] = args.pop("numero_persone")
+#     if "num_persone" in args and "persone" not in args:
+#         args["persone"] = args.pop("num_persone")
+#     if "id_turno" in args and "turno_id" not in args:
+#         args["turno_id"] = args.pop("id_turno")
+
+#     # Pulizia e casting tipi per evitare errori Pydantic
+#     if "email" in args and args["email"] is None:
+#         args["email"] = ""
+#     if "note" in args and args["note"] is None:
+#         args["note"] = ""
+#     if "celiachia" in args:
+#         if args["celiachia"] is None:
+#             args["celiachia"] = False
+#         elif isinstance(args["celiachia"], str):
+#             args["celiachia"] = args["celiachia"].lower() in ("true", "1", "si", "sì")
+#     if "turno_id" in args and args["turno_id"] is not None:
+#         try:
+#             args["turno_id"] = int(args["turno_id"])
+#         except (ValueError, TypeError):
+#             pass
+#     if "persone" in args and args["persone"] is not None:
+#         try:
+#             args["persone"] = int(args["persone"])
+#         except (ValueError, TypeError):
+#             pass
+#     if "prenotazione_id" in args and args["prenotazione_id"] is not None:
+#         try:
+#             args["prenotazione_id"] = int(args["prenotazione_id"])
+#         except (ValueError, TypeError):
+#             pass
+#     if "conferma_perdita_acconto" in args:
+#         if args["conferma_perdita_acconto"] is None:
+#             args["conferma_perdita_acconto"] = False
+#         elif isinstance(args["conferma_perdita_acconto"], str):
+#             args["conferma_perdita_acconto"] = args["conferma_perdita_acconto"].lower() in ("true", "1", "si", "sì")
+
+#     return args
+
+from datetime import datetime, timedelta
+
 def sanifica_argomenti_tool(nome_tool: str, argomenti: dict) -> dict:
     """Normalizza e sanifica i tipi dei parametri prima dell'invocazione del tool."""
     args = dict(argomenti)
@@ -159,6 +161,25 @@ def sanifica_argomenti_tool(nome_tool: str, argomenti: dict) -> dict:
         args["persone"] = args.pop("num_persone")
     if "id_turno" in args and "turno_id" not in args:
         args["turno_id"] = args.pop("id_turno")
+
+    # === 1. RISOLUZIONE VALORI TESTUALI PER LA DATA (Oggi/Domani) ===
+    if "data" in args and isinstance(args["data"], str):
+        data_pulita = args["data"].lower().strip()
+        if "domani" in data_pulita:
+            args["data"] = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            print(f"🔧 [SANIFICAZIONE] Convertito 'domani' in data ISO: {args['data']}")
+        elif "oggi" in data_pulita:
+            args["data"] = datetime.now().strftime("%Y-%m-%d")
+            print(f"🔧 [SANIFICAZIONE] Convertito 'oggi' in data ISO: {args['data']}")
+
+    # === 2. FALLBACK DI SICUREZZA PER TURNO_ID (Evita Pydantic Null Error) ===
+    if "turno_id" in args:
+        # Se l'LLM ha impostato None o non è riuscito a fare il parsing
+        if args["turno_id"] is None:
+            # Fallback predefinito di sicurezza (es. 2 per la Cena se non specificato, o 1 per Pranzo)
+            # Puoi anche controllare se nella conversazione appare la parola 'cena' o 'pranzo'
+            args["turno_id"] = 2  # Imposta un default intero anziché lasciare None
+            print(f"🔧 [SANIFICAZIONE] Rilevato turno_id=None. Applicato fallback di sicurezza: {args['turno_id']}")
 
     # Pulizia e casting tipi per evitare errori Pydantic
     if "email" in args and args["email"] is None:
@@ -174,7 +195,7 @@ def sanifica_argomenti_tool(nome_tool: str, argomenti: dict) -> dict:
         try:
             args["turno_id"] = int(args["turno_id"])
         except (ValueError, TypeError):
-            pass
+            args["turno_id"] = 2  # Fallback definitivo in caso di stringhe non convertibili
     if "persone" in args and args["persone"] is not None:
         try:
             args["persone"] = int(args["persone"])
@@ -192,6 +213,7 @@ def sanifica_argomenti_tool(nome_tool: str, argomenti: dict) -> dict:
             args["conferma_perdita_acconto"] = args["conferma_perdita_acconto"].lower() in ("true", "1", "si", "sì")
 
     return args
+
 
 
 # 3. CLASSIFICAZIONE INTENTO E STRUTTURE DATI
@@ -359,8 +381,20 @@ def gestisci_prenotazione(state: State, *, store: Optional[BaseStore] = None) ->
             memoria_allergie = item.value.get("allergie", "")
             print(f"🧠 [STORE] Allergie recuperate per cliente {telefono}: {memoria_allergie}")
 
+    adesso = datetime.now()
+    data_oggi = adesso.strftime("%Y-%m-%d")
+    data_domani = (adesso + timedelta(days=1)).strftime("%Y-%m-%d")
+    giorno_settimana = adesso.strftime("%A")
+
     prompt = (
         "Sei l'assistente virtuale della Trattoria Nonna Rosa per la gestione delle prenotazioni.\n\n"
+        f"📅 CONTESTO TEMPORALE CORRENTE (USA QUESTI DATI PER LE DATE RELATIVE):\n"
+        f"   - Oggi è: {data_oggi} ({giorno_settimana})\n"
+        f"   - Domani sarà: {data_domani}\n\n"
+        "REGOLE TASSATIVE PER L'ESTRAZIONE DELLA DATA:\n"
+        f"1. Se l'utente scrive 'domani', devi valorizzare il parametro 'data' del tool tassativamente con: {data_domani}.\n"
+        f"2. Se l'utente scrive 'oggi', devi valorizzare il parametro 'data' del tool tassativamente con: {data_oggi}.\n"
+        "3. Se l'utente non specifica l'anno, usa sempre l'anno corrente corrente.\n\n"
         "ISTRUZIONI OBBLIGATORIE PER LA SCELTA DEGLI STRUMENTI:\n"
         "1. Se il cliente chiede di PRENOTARE / CREARE una prenotazione e ti ha fornito i dati fondamentali "
         "(Nome, Telefono, Data YYYY-MM-DD, Turno ID 1 o 2, Numero Persone), DEVI CHIAMARE TASSATIVAMENTE 'crea_prenotazione'.\n"
@@ -371,6 +405,7 @@ def gestisci_prenotazione(state: State, *, store: Optional[BaseStore] = None) ->
         "MAPPATURA TURNI: 1 = Pranzo (12:30), 2 = Cena (19:30).\n"
         "REGOLA ACCONTO (GRUPPI > 8 PERSONE dal PDF): per gruppi superiori a 8 persone è obbligatorio un acconto di 10 € a persona (da versare entro 48 ore).\n"
         "Se mancano dati obbligatori per completare la prenotazione, NON usare strumenti e richiedi cortesemente i dati mancanti all'utente."
+        "Se ti viene fornita una data di prenotazione senza l'anno (es. 5 Novembre, 13/04, domani) o altre informazioni da cui puoi estrapolare la data ma senza avere certezza dell'anno DEVI CONSIDERARE L'ANNO IN CORSO."
     )
     if memoria_allergie:
         prompt += f"\n\n[MEMORIA STORE CLIENTE]: Questo cliente ({telefono}) ha segnalato in precedenza allergie/intolleranze: '{memoria_allergie}'. Tieni conto di questa informazione (impostando celiachia=True o inserendola nelle note della prenotazione)!"
@@ -422,6 +457,16 @@ def gestisci_prenotazione(state: State, *, store: Optional[BaseStore] = None) ->
             f"Esito operazione/i Database: {' | '.join(esiti)}\n\n"
             "Fornisci una risposta chiara, cortese e professionale al cliente confermando o spiegando l'esito."
         ).content
+
+        risposta_finale = llm.invoke(
+            f"Domanda dell'utente: {state['domanda']}\n"
+            f"Esito operazione/i Database: {' | '.join(esiti)}\n\n"
+            "Genera la risposta finale per il cliente. REGOLE RIGIDE:\n"
+            "- Non usare placeholder come '[Tuo Nome]', '[Il tuo nome]' o firma finale.\n"
+            "- Non dire all'utente 'ti consiglio di contattarmi' o 'contattaci', tu SEI l'assistente virtuale del locale, proponi tu di fare i controlli.\n"
+            "- Mantieni un tono cordiale da trattoria e spiega chiaramente se il rifiuto è dovuto al numero di persone in base alla disponibilità dei tavoli." # (9 persone richiedono l'acconto o non entrano nei tavoli da 6)
+        ).content
+
 
         # Se tra gli esiti è presente la ricevuta JSON di crea_prenotazione, la alleghiamo formattata
         for e in esiti:

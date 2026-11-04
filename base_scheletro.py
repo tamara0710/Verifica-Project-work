@@ -145,6 +145,9 @@ def valuta(state: State) -> dict:
         f"Domanda: {state['domanda']}\n"
         f"Documenti tratti dal menu: {state['documenti']}\n\n"
         "Valuta se i documenti contengono informazioni utili per rispondere alla domanda."
+        "Le domande su caparra, acconti, importi e condizioni per i gruppi sono pertinenti "
+        "se il contesto contiene informazioni su prenotazioni o disdette, anche quando "
+        "non si trova la parola esatta usata nella domanda.\n"
     )
     g = grader.invoke(prompt)
     return {"pertinente": g.pertinente}
@@ -167,16 +170,31 @@ def genera(state: State) -> dict:
     system_prompt = (
         "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
         "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sul testo del menu e del regolamento forniti nel contesto.\n\n"
+        "PRIORITÀ DEL FORMATO DI RISPOSTA:\n"
+        "   - Se la domanda nomina un singolo piatto e chiede se contiene uno o più allergeni, rispondi in una frase indicando per ciascun allergene se è riportato o non riportato nella riga di quel piatto.\n"
+        "   - Per questo tipo di domanda non restituire elenchi di piatti, prezzi, intestazioni di categoria o la frase 'Nessun piatto trovato'. Il nome del piatto serve a individuare la riga, non è il risultato da elencare.\n"
+        "   - Se un termine usato dall'utente non compare nella colonna 'Allergeni' ma vi compare un termine correlato, distingui i due: riporta esattamente cosa è scritto nel menu e non dichiararli equivalenti senza indicazione nel contesto.\n\n"
         "REGOLE RIGIDE DI LETTURA E LOGICA (VALIDE PER QUALSIASI MENU):\n\n"
         "1. LETTURA RIGIDA DELLA COLONNA ALLERGENI:\n"
         "   - La colonna 'Allergeni' indica gli allergeni PRESENTI nel piatto.\n"
         "   - Se la colonna 'Allergeni' di una riga contiene una sostanza (es. 'glutine', 'latte', 'pesce'), quel piatto CONTIENE tassativamente quella sostanza.\n"
         "   - È un errore critico classificare come 'senza [allergene]' un piatto la cui riga riporta quell'allergene nella colonna Allergeni.\n\n"
-        "2. IDENTIFICAZIONE OPZIONI SPECIALI (Celiachia / Vegano / Intolleranze):\n"
-        "   - Considera idonei solo i piatti che riportano l'etichetta esplicita nel nome/descrizione (es. '(senza glutine)', '(vegano)') oppure quelli la cui colonna Allergeni non contiene l'allergene richiesto.\n"
-        "   - Se la colonna Allergeni di un piatto contiene 'glutine', quel piatto CONTIENE GLUTINE.\n"
-        "   - Gli unici piatti idonei per celiaci/senza glutine sono quelli contrassegnati come '(senza glutine)'"
-        "   - Ispeziona SEMPRE sia le tabelle dei piatti sia le note/regolamento generali, in quanto le note possono contenere opzioni su richiesta o supplementi.\n\n"
+        "2. RICHIESTE SU ALLERGENI E PREFERENZE ALIMENTARI:\n"
+        "   - Distingui il criterio richiesto: una dicitura nel nome/descrizione del piatto e la colonna 'Allergeni' sono informazioni diverse e non vanno confuse.\n"
+        "   - Se l'utente chiede quali piatti di una categoria sono indicati nel menu come 'senza' un ingrediente o adatti a un regime alimentare, controlla il nome/descrizione di ciascun piatto nella tabella della categoria e includi solo le righe con l'indicazione esplicita. Non usare una nota generica per aggiungere o riclassificare piatti della tabella.\n"
+        "   - Per richieste di piatti vegani o vegetariani, cerca le diciture corrispondenti nel nome/descrizione (ad esempio 'vegano', 'vegana', 'vegetariano', 'vegetariana'); considera equivalenti le variazioni di genere e numero e includi tutti i piatti che corrispondono nelle categorie richieste. La dicitura nel nome/descrizione basta a identificare l'etichetta: non deve essere ripetuta nella colonna 'Allergeni'.\n"
+        "   - Le preparazioni o sostituzioni descritte nelle note sono opzioni su richiesta separate dai piatti elencati. Non attribuirle a uno specifico piatto o formato, e non includerle quando l'utente chiede quali piatti sono già indicati nel menu con una caratteristica; menzionale solo se l'utente chiede opzioni o modifiche su richiesta.\n"
+        "   - Se l'utente chiede quali piatti riportano o non riportano un allergene nella colonna 'Allergeni', usa esclusivamente quella colonna per applicare il filtro. Considera l'allergene presente quando è scritto nella cella, incluse eventuali specificazioni tra parentesi.\n"
+        "   - Applica il criterio correttamente per qualsiasi ingrediente o allergene nominato dall'utente; non trasferire informazioni da una riga a un'altra.\n"
+        "   - Per richieste relative a una categoria, considera solo i piatti della categoria indicata.\n"
+        "   - Quando elenchi piatti, riporta il nome esatto e il prezzo della stessa riga. Non aggiungere piatti non verificati.\n"
+        "   - Per domande sulla sicurezza per celiachia o allergie, non garantire l'assenza di contaminazione: distingui le indicazioni del menu da una garanzia di sicurezza.\n"
+        "   - Per richieste su piatti vegani o vegetariani, cerca l'indicazione nel nome o nella descrizione di ogni piatto; non dedurla dalla colonna 'Allergeni'.\n"
+        "   - Esamina tutte le categorie richieste e considera ogni riga separatamente, mantenendo associati piatto, prezzo ed etichetta.\n"
+        "   - Riporta tutti e soli i piatti che corrispondono, con nome e prezzo esatti. Non omettere una categoria richiesta e non aggiungere piatti senza l'indicazione corrispondente.\n"
+        "   - Se la domanda include più categorie, trattale come richieste separate: individua tutte le categorie nominate ed esamina una per una le rispettive righe. Non dichiarare che una categoria non ha corrispondenze se nel suo nome/descrizione compare l'etichetta richiesta.\n"
+        "   - Per richieste che chiedono un elenco, rispondi solo con intestazioni delle categorie e punti elenco nel formato '- Nome esatto del piatto — prezzo'. Non aggiungere spiegazioni, frasi introduttive o commenti sulla colonna 'Allergeni'. Se una categoria non ha risultati, scrivi sotto la sua intestazione '- Nessun piatto trovato'.\n"
+        "   - Se l'utente chiede se un prodotto è disponibile, controlla il menu. Se non è presente, rispondi chiaramente: 'Nel menu attuale non sono presenti ...'. Non limitarti a dire che non hai trovato l'informazione e non inventare alternative.\n"
         "3. COMPLETEZZA SULLE INFORMAZIONI GENERALI ED ORARI:\n"
         "   - Quando vengono chiesti orari, regole o condizioni, estrai TUTTI i dettagli presenti nel testo (giorni, turni orari specifici, limitazioni di zona/dehors) senza sintetizzare od omettere cifre e orari prescritti.\n\n"
         "4. CANI E ANIMALI DOMESTICI:\n"
@@ -272,38 +290,42 @@ memory = MemorySaver()
 graph = builder.compile(checkpointer=memory)
 
 
-from pathlib import Path
+# from pathlib import Path
 
-# Determina la cartella corrente dello script .py
-base_dir = Path(__file__).parent if "__file__" in globals() else Path.cwd()
-output_path = base_dir / "grafo_langgraph.png"
+# # Determina la cartella corrente dello script .py
+# base_dir = Path(__file__).parent if "__file__" in globals() else Path.cwd()
+# output_path = base_dir / "grafo_langgraph.png"
 
-try:
-    # Ottiene i dati binari del PNG generato da Mermaid e li scrive su file
-    png_data = graph.get_graph().draw_mermaid_png()
-    output_path.write_bytes(png_data)
-    print(f"🎉 Grafo salvato con successo in: {output_path.resolve()}")
-except Exception as e:
-    print(f"❌ Impossibile generare l'immagine: {e}")
+# try:
+#     # Ottiene i dati binari del PNG generato da Mermaid e li scrive su file
+#     png_data = graph.get_graph().draw_mermaid_png()
+#     output_path.write_bytes(png_data)
+#     print(f"🎉 Grafo salvato con successo in: {output_path.resolve()}")
+# except Exception as e:
+#     print(f"❌ Impossibile generare l'immagine: {e}")
 
 
 # 6. BATTERIA DI TEST
 
 if __name__ == "__main__":
     test_cases = [
-        ("TC-01", "Qual è il numero di telefono e l'indirizzo?", "CAG (FAQ)"),
-        ("TC-02", "Quali sono gli orari di apertura del weekend?", "RAG (Orari Menu)"),
-        ("TC-03", "Posso portare un cane in trattoria?", "RAG (Regole Cani)"),
-        ("TC-04", "Quali primi senza glutine ci sono?", "RAG (Menu SG)"),
-        ("TC-05", "Ci sono piatti vegani tra i dolci o gli antipasti?", "RAG (Menu Vegan)"),
-        ("TC-06", "Le orecchiette alle cime di rapa contengono pesce o lattosio?", "RAG (Allergeni)"),
-        ("TC-07", "Avete la pizza margherita o i panini?", "RAG (Piatto assente)"),
-        ("TC-08", "Vorrei informazioni sulla caparra per i gruppi", "RAG (Acconti)"),
+    #    ("TC-01", "Qual è il numero di telefono e l'indirizzo?", "CAG (FAQ)"),
+    #    ("TC-02", "Quali sono gli orari di apertura del weekend?", "RAG (Orari Menu)"),
+    #    ("TC-03", "Posso portare un cane in trattoria?", "RAG (Regole Cani)"),
+    #    ("TC-04", "Quali primi sono già indicati nel menu come senza glutine, senza considerare le
+    #     modifiche su richiesta?", "RAG (Menu SG)"),
+    #     ("TC-05", "Quali piatti vegani sono presenti nel menu?", "RAG (Menu Vegan)"),
+    #     ("TC-06", "Le orecchiette alle cime di rapa contengono pesce o lattosio?", "RAG (Allergeni)"),
+    #     ("TC-07", "Avete la pizza margherita o i panini?", "RAG (Piatto assente)"),
+         ("TC-08", "Vorrei informazioni sulla caparra per i gruppi", "RAG (Acconti)"),
     ]
 
     print("==================================================")
     print("      AVVIO BATTERIA DI TEST CORRETTA             ")
     print("==================================================\n")
+
+    domanda_8 = "Vorrei informazioni sulla caparra per i gruppi"
+    descrizione = "RAG (Acconti)"
 
     for test_id, domanda, descrizione in test_cases:
         config = {"configurable": {"thread_id": f"sessione_{test_id}"}}

@@ -75,13 +75,22 @@ PATH_TRATTORIA.parent.mkdir(parents=True, exist_ok=True)
 crea_tabelle_complete()
 
 # 3. INIZIALIZZAZIONE STORE SQLITE (Memoria Cross-Conversazione / Allergie)
-store_conn = sqlite3.connect(str(PATH_STORE), check_same_thread=False, timeout=20.0)
+# store_conn = sqlite3.connect(str(PATH_STORE), check_same_thread=False, timeout=20.0)
+# store_conn.execute("PRAGMA journal_mode=WAL;")
+# store = SqliteStore(store_conn)
+# store.setup()
+store_conn = sqlite3.connect(
+    str(PATH_STORE), 
+    check_same_thread=False, 
+    timeout=20.0,
+    isolation_level=None  # <-- AGGIUNGI QUESTO PARAMETRO (Autocommit Mode)
+)
 store_conn.execute("PRAGMA journal_mode=WAL;")
 store = SqliteStore(store_conn)
 store.setup()
 
 # 4. INIZIALIZZAZIONE CHECKPOINTER SQLITE (Stato Conversazione / Resume Interrupt)
-sqlite_conn = sqlite3.connect(str(PATH_CHECKPOINTS), check_same_thread=False, timeout=20.0)
+sqlite_conn = sqlite3.connect(str(PATH_CHECKPOINTS), check_same_thread=False, timeout=20.0, isolation_level=None)
 sqlite_conn.execute("PRAGMA journal_mode=WAL;")
 checkpointer = SqliteSaver(sqlite_conn)
 checkpointer.setup()
@@ -581,25 +590,47 @@ def avvia_chatbot():
 
     while True:
         try:
+            # # Controllo se il grafo si trova in uno stato interrotto (Interrupt in sospeso)
+            # stato_attuale = graph.get_state(config)
+            
+            # if stato_attuale.next:
+            #     # Gestione ripresa da Interrupt (es. conferma prenotazione)
+            #     dati_interrupt = stato_attuale.tasks[0].interrupts[0].value
+            #     print("\n" + "=" * 55)
+            #     print("⚠️  RICHIESTA DI CONFERMA IN SOSPESO")
+            #     print("=" * 55)
+            #     print(f"📋 Dettagli: {dati_interrupt}")
+                
+            #     conferma = input("\n👉 Inserisci 'si' per confermare o 'no' per annullare: ").strip().lower()
+            #     esito_bool = conferma in ("si", "sì", "yes", "true", "1")
+                
+            #     print("\n🔄 Ripresa esecuzione grafo...")
+            #     risposta = graph.invoke(Command(resume=esito_bool), config=config)
+            #     if "risposta" in risposta and risposta["risposta"]:
+            #         print(f"\n🤖 Assistente:\n{risposta['risposta']}\n")
+            #     continue
+
             # Controllo se il grafo si trova in uno stato interrotto (Interrupt in sospeso)
             stato_attuale = graph.get_state(config)
             
-            if stato_attuale.next:
-                # Gestione ripresa da Interrupt (es. conferma prenotazione)
-                dati_interrupt = stato_attuale.tasks[0].interrupts[0].value
-                print("\n" + "=" * 55)
-                print("⚠️  RICHIESTA DI CONFERMA IN SOSPESO")
-                print("=" * 55)
-                print(f"📋 Dettagli: {dati_interrupt}")
-                
-                conferma = input("\n👉 Inserisci 'si' per confermare o 'no' per annullare: ").strip().lower()
-                esito_bool = conferma in ("si", "sì", "yes", "true", "1")
-                
-                print("\n🔄 Ripresa esecuzione grafo...")
-                risposta = graph.invoke(Command(resume=esito_bool), config=config)
-                if "risposta" in risposta and risposta["risposta"]:
-                    print(f"\n🤖 Assistente:\n{risposta['risposta']}\n")
-                continue
+            if stato_attuale.next and stato_attuale.tasks:
+                task = stato_attuale.tasks[0]
+                # VERIFICA SICURA: controlla che ci siano interrupt presenti prima di accedere all'indice 0
+                if hasattr(task, "interrupts") and task.interrupts:
+                    dati_interrupt = task.interrupts[0].value
+                    print("\n" + "=" * 55)
+                    print("⚠️  RICHIESTA DI CONFERMA IN SOSPESO")
+                    print("=" * 55)
+                    print(f"📋 Dettagli: {dati_interrupt}")
+                    
+                    conferma = input("\n👉 Inserisci 'si' per confermare o 'no' per annullare: ").strip().lower()
+                    esito_bool = conferma in ("si", "sì", "yes", "true", "1")
+                    
+                    print("\n🔄 Ripresa esecuzione grafo...")
+                    risposta = graph.invoke(Command(resume=esito_bool), config=config)
+                    if "risposta" in risposta and risposta["risposta"]:
+                        print(f"\n🤖 Assistente:\n{risposta['risposta']}\n")
+                    continue
 
             # Prompt utente standard
             user_input = input(f"👤 [{telefono_corrente} @ {thread_id}] > ").strip()

@@ -1,139 +1,166 @@
 """Tool del chatbot della Trattoria "Da Nonna Rosa" (Traccia B).
 
-Il file è diviso in 3 parti:
-1. impostazioni e regole della trattoria (modifichi i numeri solo qui)
-2. funzioni di supporto (NON sono tool: le usano i tool qui sotto)
+1. regole della trattoria (i numeri si cambiano solo qui)
+2. funzioni di supporto (non sono tool)
 3. i tool: verifica_disponibilita, crea_prenotazione, annulla_o_consulta
 """
 import json
+import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
-
 from typing import Optional
-from langchain_core.tools import tool
 
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
-DB_PATH = Path(__file__).resolve().parents[1] / "database" / "trattoria.db"
+DB_PATH = Path(__file__).resolve().parent / "trattoria.db"
 
 # ==========================================================
-# 1. REGOLE DELLA TRATTORIA (prese dal PDF del menù)
+# 1. REGOLE DELLA TRATTORIA (dal PDF del menù)
 # ==========================================================
 PERSONE_MIN = 1
 PERSONE_MAX = 12
-SOGLIA_ACCONTO = 8            # l'acconto serve se le persone sono PIÙ di 8
+SOGLIA_ACCONTO = 8            # acconto se le persone sono PIÙ di 8
 ACCONTO_A_PERSONA = 10        # euro
 GIORNI_MAX_ANTICIPO = 30
 ORE_DISDETTA_GRATUITA = 24
-MINUTI_TOLLERANZA = 15        # il tavolo viene tenuto 15 minuti dopo l'inizio del turno
-DEHORS_DA_MESE = 4            # il dehors è aperto da aprile...
+MINUTI_TOLLERANZA = 15
+DEHORS_DA_MESE = 4            # dehors aperto da aprile...
 DEHORS_A_MESE = 10            # ...a ottobre
-TELEFONO_TRATTORIA = "347 890 3567"
+TELEFONO_TRATTORIA = "+39 080 1234567"   # come in info_trattoria.md
 
-# Stati delle prenotazioni nel DB.
-# Se nel tuo DB l'annullamento si chiama 'disdetta', cambia solo qui.
 STATO_CONFERMATA = "confermata"
 STATO_ATTESA_ACCONTO = "in_attesa_acconto"
 STATO_ANNULLATA = "annullata"
+STATI_ATTIVI = (STATO_CONFERMATA, STATO_ATTESA_ACCONTO)
+
+SI = {"true", "1", "si", "sì", "s", "y", "yes", "ok", "confermo", "conferma"}
 
 
 # ==========================================================
-# 2. FUNZIONI DI SUPPORTO (non sono tool)
+# 2. FUNZIONI DI SUPPORTO
 # ==========================================================
 def connetti_db():
-    """Crea una connessione al database SQLite."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # così posso scrivere riga["id"]
+    conn = sqlite3.connect(DB_PATH, timeout=20.0)
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def controlla_richiesta(data: str, persone: int):
-    """Controlla persone e data.
-    Ritorna (giorno, None) se va bene, oppure (None, messaggio_errore)."""
-    if persone < PERSONE_MIN or persone > PERSONE_MAX:
-        return None, f"Errore: il numero di persone deve essere compreso tra {PERSONE_MIN} e {PERSONE_MAX}."
+def normalizza_telefono(telefono) -> str:
+    """Solo cifre, senza prefisso internazionale: '+39 347 557 7777' -> '3475577777'."""
+    cifre = re.sub(r"\D", "", str(telefono or ""))
+    if cifre.startswith("0039"):
+        cifre = cifre[4:]
+    elif cifre.startswith("39") and len(cifre) > 10:
+        cifre = cifre[2:]
+    return cifre
 
+
+def telefono_valido(cifre: str) -> bool:
+    return 6 <= len(cifre) <= 13
+
+
+def a_intero(valore) -> Optional[int]:
     try:
-        giorno = datetime.strptime(data, "%Y-%m-%d").date()
-    except ValueError:
-        return None, "Errore: la data deve essere nel formato YYYY-MM-DD, per esempio 2026-11-10."
+        return int(float(str(valore).strip()))
+    except (ValueError, TypeError):
+        return None
+
+
+def a_bool(valore) -> bool:
+    if isinstance(valore, bool):
+        return valore
+    return str(valore).strip().lower() in SI
+
+
+def elenco_turni() -> list:
+    """Turni presenti nel DB, ordinati per orario (usato anche nel prompt dell'agente)."""
+    with closing(connetti_db()) as conn:
+        return [dict(r) for r in conn.execute("SELECT id, nome, orario FROM turni ORDER BY orario")]
+
+
+def controlla_richiesta(data, persone):
+    """Ritorna (giorno, persone, None) se va bene, oppure (None, None, messaggio_errore)."""
+    n = a_intero(persone)
+    if n is None or n < PERSONE_MIN or n > PERSONE_MAX:
+        return None, None, f"Errore: il numero di persone deve essere compreso tra {PERSONE_MIN} e {PERSONE_MAX}."
+
+    giorno = None
+    for formato in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            giorno = datetime.strptime(str(data).strip(), formato).date()
+            break
+        except ValueError:
+            continue
+    if giorno is None:
+        return None, None, "Errore: la data deve essere nel formato YYYY-MM-DD, per esempio 2026-11-10."
 
     oggi = datetime.now().date()
-
     if giorno < oggi:
-        return None, "Errore: la data è già passata."
+        return None, None, "Errore: la data è già passata."
     if giorno > oggi + timedelta(days=GIORNI_MAX_ANTICIPO):
-        return None, f"Errore: si può prenotare solo fino a {GIORNI_MAX_ANTICIPO} giorni prima."
-    if giorno.weekday() == 0:  # in Python lunedì = 0
-        return None, "Errore: il lunedì la trattoria è chiusa."
+        return None, None, f"Errore: si può prenotare solo fino a {GIORNI_MAX_ANTICIPO} giorni prima."
+    if giorno.weekday() == 0:
+        return None, None, "Errore: il lunedì la trattoria è chiusa."
+    return giorno, n, None
 
-    return giorno, None
 
-
-def controlla_turno(conn, giorno, turno_id: int):
-    """Controlla che il turno esista e non sia già iniziato.
-    Ritorna (turno, None) oppure (None, messaggio_errore)."""
-    turno = conn.execute(
-        "SELECT id, nome, orario FROM turni WHERE id = ?",
-        (turno_id,)
-    ).fetchone()
-
+def controlla_turno(conn, giorno, turno_id):
+    """Ritorna (turno, None) oppure (None, messaggio_errore)."""
+    tid = a_intero(turno_id)
+    turno = conn.execute("SELECT id, nome, orario FROM turni WHERE id = ?", (tid,)).fetchone() if tid is not None else None
     if turno is None:
-        # aiuto l'agente elencando i turni che esistono davvero
         elenco = conn.execute("SELECT id, nome, orario FROM turni ORDER BY orario").fetchall()
         testo = ", ".join(f"{t['id']} = {t['nome']} {t['orario']}" for t in elenco)
         return None, f"Errore: il turno {turno_id} non esiste. Turni disponibili: {testo}."
 
-    # se prenoto per oggi, il turno non deve essere già iniziato
     inizio = datetime.strptime(f"{giorno.isoformat()} {turno['orario']}", "%Y-%m-%d %H:%M")
     if datetime.now() > inizio + timedelta(minutes=MINUTI_TOLLERANZA):
         return None, "Errore: questo turno è già iniziato, scegli un altro turno."
-
     return turno, None
 
 
 def trova_tavolo_libero(conn, giorno, turno_id: int, persone: int):
-    """Ritorna il tavolo libero più piccolo che basta per le persone, oppure None.
-    La usano sia verifica_disponibilita sia crea_prenotazione: così scelgono sempre lo stesso tavolo."""
-    tavoli_liberi = conn.execute("""
+    """Tavolo libero più piccolo con posti >= persone, oppure None."""
+    liberi = conn.execute("""
         SELECT t.id, t.posti, t.zona
         FROM tavoli AS t
         WHERE t.posti >= ?
           AND NOT EXISTS (
-              SELECT 1
-              FROM prenotazioni AS p
-              WHERE p.tavolo_id = t.id
-                AND p.data = ?
-                AND p.turno_id = ?
-                AND p.stato IN ('confermata', 'in_attesa_acconto')
-          )
+              SELECT 1 FROM prenotazioni AS p
+              WHERE p.tavolo_id = t.id AND p.data = ? AND p.turno_id = ?
+                AND p.stato IN ('confermata', 'in_attesa_acconto'))
         ORDER BY t.posti, t.id
     """, (persone, giorno.isoformat(), turno_id)).fetchall()
 
     dehors_aperto = DEHORS_DA_MESE <= giorno.month <= DEHORS_A_MESE
-
-    for tavolo in tavoli_liberi:
-        # se il dehors è chiuso salto i tavoli esterni
-        if tavolo["zona"] == "dehors" and not dehors_aperto:
+    for tavolo in liberi:
+        if tavolo["zona"].lower() == "dehors" and not dehors_aperto:
             continue
         return tavolo
-
     return None
 
 
+def turni_alternativi(conn, giorno, persone: int, escludi_turno: int) -> str:
+    """Testo con gli altri turni del giorno che hanno ancora un tavolo libero."""
+    liberi = []
+    for t in conn.execute("SELECT id, nome, orario FROM turni WHERE id != ? ORDER BY orario", (escludi_turno,)):
+        inizio = datetime.strptime(f"{giorno.isoformat()} {t['orario']}", "%Y-%m-%d %H:%M")
+        if datetime.now() > inizio + timedelta(minutes=MINUTI_TOLLERANZA):
+            continue
+        if trova_tavolo_libero(conn, giorno, t["id"], persone) is not None:
+            liberi.append(f"{t['nome']} {t['orario']} (turno {t['id']})")
+    return (" Turni ancora liberi lo stesso giorno: " + ", ".join(liberi) + ".") if liberi else ""
+
+
 def acconto_richiesto(persone: int) -> int:
-    """Ritorna l'acconto in euro (0 se non serve)."""
-    if persone > SOGLIA_ACCONTO:
-        return persone * ACCONTO_A_PERSONA
-    return 0
+    return persone * ACCONTO_A_PERSONA if persone > SOGLIA_ACCONTO else 0
 
 
 def frase_acconto(importo: int) -> str:
-    """Frase da dire al cliente quando c'è un acconto."""
     return (
         f"Serve un acconto di {importo} euro entro 48 ore dalla prenotazione. "
         f"Le modalità di pagamento vanno concordate con la trattoria "
@@ -142,20 +169,44 @@ def frase_acconto(importo: int) -> str:
 
 
 def trova_o_crea_cliente(conn, nome: str, telefono: str, email: str) -> int:
-    """Cerca il cliente dal telefono, se non c'è lo crea. Ritorna l'id del cliente."""
-    riga = conn.execute(
-        "SELECT id FROM clienti WHERE telefono = ?",
-        (telefono,)
-    ).fetchone()
-
+    riga = conn.execute("SELECT id FROM clienti WHERE telefono = ?", (telefono,)).fetchone()
     if riga is not None:
         return riga["id"]
+    cur = conn.execute("INSERT INTO clienti (nome, telefono, email) VALUES (?, ?, ?)",
+                       (nome, telefono, email or None))
+    return cur.lastrowid
 
-    cursor = conn.execute(
-        "INSERT INTO clienti (nome, telefono, email) VALUES (?, ?, ?)",
-        (nome, telefono, email if email else None),
-    )
-    return cursor.lastrowid
+
+def prenotazioni_attive(conn, telefono: str) -> list:
+    """Prenotazioni attive e non ancora scadute del cliente (solo future / turno in corso)."""
+    righe = conn.execute("""
+        SELECT p.id, p.data, p.persone, p.stato, p.segnala_celiachia,
+               t.nome AS turno, t.orario, tv.id AS tavolo, tv.zona
+        FROM prenotazioni AS p
+        JOIN clienti AS c ON c.id = p.cliente_id
+        JOIN turni AS t ON t.id = p.turno_id
+        JOIN tavoli AS tv ON tv.id = p.tavolo_id
+        WHERE c.telefono = ? AND p.stato IN ('confermata', 'in_attesa_acconto')
+          AND p.data >= date('now', 'localtime')
+        ORDER BY p.data, t.orario
+    """, (telefono,)).fetchall()
+    adesso = datetime.now()
+    attive = []
+    for p in righe:
+        inizio = datetime.strptime(f"{p['data']} {p['orario']}", "%Y-%m-%d %H:%M")
+        if adesso <= inizio + timedelta(minutes=MINUTI_TOLLERANZA):
+            attive.append(p)
+    return attive
+
+
+def descrivi_prenotazione(p) -> str:
+    cel = " (celiachia segnalata)" if p["segnala_celiachia"] == 1 else ""
+    testo = (f"- Codice {p['id']}: {p['data']}, turno {p['turno']} ({p['orario']}), "
+             f"{p['persone']} persone, tavolo {p['tavolo']} (zona {p['zona']}), stato: {p['stato']}{cel}")
+    importo = acconto_richiesto(p["persone"])
+    if importo > 0:
+        testo += f"\n  Acconto: {importo} euro, da pagare entro 48 ore dalla prenotazione."
+    return testo
 
 
 # ==========================================================
@@ -165,35 +216,31 @@ def trova_o_crea_cliente(conn, nome: str, telefono: str, email: str) -> int:
 def verifica_disponibilita(data: str, turno_id: int, persone: int) -> str:
     """Verifica se c'è un tavolo libero per data (YYYY-MM-DD), turno e numero di persone.
 
-    Regole: trattoria chiusa il lunedì, prenotazioni fino a 30 giorni prima,
-    da 1 a 12 persone. Se il turno_id non esiste, l'errore elenca i turni validi.
+    turno_id: 1 = Pranzo 12:30, 3 = Pranzo 14:00, 2 = Cena 19:30, 4 = Cena 21:30.
+    Regole: chiuso il lunedì, prenotazioni fino a 30 giorni prima, da 1 a 12 persone.
     Non prenota niente: serve solo a controllare.
     """
-    giorno, errore = controlla_richiesta(data, persone)
-    if errore:
-        return errore
-
-    with closing(connetti_db()) as conn:
-        turno, errore = controlla_turno(conn, giorno, turno_id)
+    try:
+        giorno, n, errore = controlla_richiesta(data, persone)
         if errore:
             return errore
-
-        tavolo = trova_tavolo_libero(conn, giorno, turno_id, persone)
-
-    if tavolo is None:
-        return "Non ci sono tavoli disponibili per la data e il turno richiesti."
-
-    risposta = (
-        f"Tavolo {tavolo['id']} disponibile il {giorno.isoformat()}, "
-        f"turno {turno['nome']} ({turno['orario']}): "
-        f"{tavolo['posti']} posti, zona {tavolo['zona']}."
-    )
-
-    importo = acconto_richiesto(persone)
-    if importo > 0:
-        risposta += " " + frase_acconto(importo)
-
-    return risposta
+        with closing(connetti_db()) as conn:
+            turno, errore = controlla_turno(conn, giorno, turno_id)
+            if errore:
+                return errore
+            tavolo = trova_tavolo_libero(conn, giorno, turno["id"], n)
+            if tavolo is None:
+                return ("Non ci sono tavoli disponibili per la data e il turno richiesti."
+                        + turni_alternativi(conn, giorno, n, turno["id"]))
+        risposta = (f"Tavolo {tavolo['id']} disponibile il {giorno.isoformat()}, "
+                    f"turno {turno['nome']} ({turno['orario']}): "
+                    f"{tavolo['posti']} posti, zona {tavolo['zona']}.")
+        importo = acconto_richiesto(n)
+        if importo > 0:
+            risposta += " " + frase_acconto(importo)
+        return risposta
+    except Exception as e:
+        return f"Errore durante la verifica della disponibilità: {e}"
 
 
 @tool
@@ -210,121 +257,103 @@ def crea_prenotazione(
     """Crea una nuova prenotazione. Prima di scrivere sul database chiede conferma al cliente.
 
     Richiede nome, telefono, data (YYYY-MM-DD), turno_id e numero di persone.
+    turno_id: 1 = Pranzo 12:30, 3 = Pranzo 14:00, 2 = Cena 19:30, 4 = Cena 21:30.
     Email e note sono opzionali. Metti celiachia=True se un ospite è celiaco
     (pasta senza glutine con cottura separata, supplemento 2 euro).
-    Regole: trattoria chiusa il lunedì, prenotazioni fino a 30 giorni prima,
-    da 1 a 12 persone, acconto di 10 euro a persona se il gruppo ha più di 8 persone.
+    Regole: chiuso il lunedì, fino a 30 giorni prima, da 1 a 12 persone,
+    acconto di 10 euro a persona se il gruppo ha più di 8 persone.
     Ritorna la ricevuta in formato JSON.
     """
-    # --- 1. pulizia e controlli (nessuna scrittura sul DB) ---
-    nome = nome.strip()
-    telefono = telefono.strip()
-    email = email.strip()
-    note = note.strip()
+    # --- 1. pulizia e controlli (nessuna scrittura) ---
+    nome = str(nome or "").strip()
+    email = str(email or "").strip()
+    note = str(note or "").strip()
+    tel = normalizza_telefono(telefono)
+    celiachia = a_bool(celiachia)
 
-    if not nome or not telefono:
-        return "Errore: inserisci il nome e il telefono del cliente."
+    if not nome:
+        return "Errore: inserisci il nome del cliente."
+    if not telefono_valido(tel):
+        return "Errore: il numero di telefono non sembra valido (servono almeno 6 cifre)."
 
-    giorno, errore = controlla_richiesta(data, persone)
+    giorno, n, errore = controlla_richiesta(data, persone)
     if errore:
         return errore
-
-    data = giorno.isoformat()  # formato sempre uguale nel DB (es. 2026-11-05)
+    data = giorno.isoformat()
 
     if celiachia:
         note = ("CELIACHIA: pasta senza glutine con cottura separata. " + note).strip()
+    importo = acconto_richiesto(n)
+    stato = STATO_ATTESA_ACCONTO if importo > 0 else STATO_CONFERMATA
 
-    importo = acconto_richiesto(persone)
-    if importo > 0:
-        stato = STATO_ATTESA_ACCONTO
-    else:
-        stato = STATO_CONFERMATA
+    try:
+        with closing(connetti_db()) as conn:
+            turno, errore = controlla_turno(conn, giorno, turno_id)
+            if errore:
+                return errore
+            doppia = conn.execute("""
+                SELECT p.id FROM prenotazioni p JOIN clienti c ON c.id = p.cliente_id
+                WHERE c.telefono = ? AND p.data = ? AND p.turno_id = ?
+                  AND p.stato IN ('confermata', 'in_attesa_acconto')
+            """, (tel, data, turno["id"])).fetchone()
+            if doppia is not None:
+                return (f"Errore: questo numero ha già la prenotazione {doppia['id']} per quel giorno e turno. "
+                        f"Se vuoi cambiarla, annullala prima.")
+            tavolo = trova_tavolo_libero(conn, giorno, turno["id"], n)
+            if tavolo is None:
+                return ("Errore: non ci sono tavoli disponibili per la data e il turno richiesti."
+                        + turni_alternativi(conn, giorno, n, turno["id"]))
+    except Exception as e:
+        return f"Errore durante il controllo della disponibilità: {e}"
 
-    segnala_celiachia = 1 if celiachia else 0
-
-    with closing(connetti_db()) as conn:
-        turno, errore = controlla_turno(conn, giorno, turno_id)
-        if errore:
-            return errore
-
-        tavolo = trova_tavolo_libero(conn, giorno, turno_id, persone)
-
-    if tavolo is None:
-        return "Errore: non ci sono tavoli disponibili per la data e il turno richiesti."
-
-    # --- 2. conferma del cliente PRIMA dell'INSERT ---
-    # L'interrupt sta fuori dal try/except, altrimenti verrebbe catturato come errore.
+    # --- 2. conferma del cliente PRIMA dell'INSERT (fuori da ogni try/except) ---
     conferma = interrupt({
         "domanda": "Confermi la prenotazione?",
         "nome": nome,
-        "telefono": telefono,
+        "telefono": tel,
         "data": data,
         "turno": f"{turno['nome']} ({turno['orario']})",
-        "persone": persone,
+        "persone": n,
         "zona": tavolo["zona"],
         "acconto_euro": importo,
         "celiachia": celiachia,
     })
+    if not a_bool(conferma):
+        return json.dumps({"esito": "non_confermata",
+                           "messaggio": "Prenotazione non confermata dal cliente."}, ensure_ascii=False)
 
-    if conferma is not True:
-        return json.dumps(
-            {"esito": "non_confermata", "messaggio": "Prenotazione non confermata dal cliente."},
-            ensure_ascii=False,
-        )
-
-    # --- 3. scrivo nel DB (tutto in una transazione) ---
+    # --- 3. scrittura in una transazione ---
     with closing(connetti_db()) as conn:
         try:
             conn.execute("BEGIN IMMEDIATE")
-
-            # ricontrollo il tavolo: nel frattempo un altro cliente potrebbe averlo preso
-            tavolo = trova_tavolo_libero(conn, giorno, turno_id, persone)
+            tavolo = trova_tavolo_libero(conn, giorno, turno["id"], n)   # ricontrollo
             if tavolo is None:
                 conn.rollback()
                 return "Errore: nel frattempo il tavolo è stato prenotato da un altro cliente."
-
-            cliente_id = trova_o_crea_cliente(conn, nome, telefono, email)
-
-            cursor = conn.execute("""
+            cliente_id = trova_o_crea_cliente(conn, nome, tel, email)
+            cur = conn.execute("""
                 INSERT INTO prenotazioni (cliente_id, tavolo_id, turno_id, data, persone, note, stato, segnala_celiachia)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                cliente_id,
-                tavolo["id"],
-                turno_id,
-                data,
-                persone,
-                note if note else None,
-                stato,
-                segnala_celiachia,
-            ))
-            prenotazione_id = cursor.lastrowid
-
+            """, (cliente_id, tavolo["id"], turno["id"], data, n, note or None, stato, 1 if celiachia else 0))
+            prenotazione_id = cur.lastrowid
             conn.commit()
-
         except Exception as e:
             conn.rollback()
-            return f"Errore durante la creazione della prenotazione: {str(e)}"
+            return f"Errore durante la creazione della prenotazione: {e}"
 
-    # --- 4. ricevuta in JSON ---
+    # --- 4. ricevuta JSON ---
     ricevuta = {
-        "esito": "ok",
-        "codice": prenotazione_id,
-        "nome": nome,
-        "data": data,
-        "turno": turno["nome"],
-        "orario": turno["orario"],
-        "tavolo": tavolo["id"],
-        "zona": tavolo["zona"],
-        "persone": persone,
-        "stato": stato,
-        "acconto_euro": importo,
-        "celiachia": celiachia,
+        "esito": "ok", "codice": prenotazione_id, "nome": nome, "telefono": tel, "data": data,
+        "turno": turno["nome"], "orario": turno["orario"], "tavolo": tavolo["id"], "zona": tavolo["zona"],
+        "persone": n, "stato": stato, "acconto_euro": importo, "celiachia": celiachia,
     }
     if importo > 0:
         ricevuta["info_acconto"] = frase_acconto(importo)
-
     return json.dumps(ricevuta, ensure_ascii=False)
+
+
+AZIONI_CONSULTA = {"consulta", "consultare", "mostra", "visualizza", "lista", "elenco", "vedi", "controlla"}
+AZIONI_ANNULLA = {"annulla", "annullare", "cancella", "cancellare", "disdici", "disdire", "disdetta"}
 
 
 @tool
@@ -332,140 +361,102 @@ def annulla_o_consulta(
     azione: str,
     telefono: str,
     prenotazione_id: Optional[int] = None,
-    conferma_perdita_acconto: bool = False,
 ) -> str:
     """Consulta o annulla le prenotazioni di un cliente usando il suo telefono.
 
-    azione = "consulta": mostra le prenotazioni attive future e le regole dell'acconto
-    (10 euro a persona se il gruppo ha più di 8 persone, da pagare entro 48 ore).
-
-    azione = "annulla": annulla la prenotazione con prenotazione_id.
-    La disdetta è gratuita fino a 24 ore prima del turno. Per i gruppi con
-    acconto, se si disdice dopo, l'acconto si perde: PRIMA di usare
-    conferma_perdita_acconto=True bisogna chiedere conferma al cliente.
+    azione = "consulta": mostra le prenotazioni attive e le regole su acconto e disdetta.
+    azione = "annulla": annulla la prenotazione prenotazione_id (se il cliente ne ha una sola
+    si può omettere). Il tool chiede da solo la conferma al cliente prima di annullare.
+    Disdetta gratuita fino a 24 ore prima; per i gruppi con acconto (oltre 8 persone),
+    una disdetta più tardi comporta la perdita dell'acconto.
     """
-    telefono = telefono.strip()
-    if telefono == "":
-        return "Errore: inserisci il numero di telefono della prenotazione."
-
-    if azione != "consulta" and azione != "annulla":
+    az = str(azione or "").strip().lower()
+    if az in AZIONI_CONSULTA:
+        az = "consulta"
+    elif az in AZIONI_ANNULLA:
+        az = "annulla"
+    else:
         return "Errore: l'azione deve essere 'consulta' oppure 'annulla'."
 
-    with closing(connetti_db()) as conn:
-        try:
-            # ==============================
-            # PARTE 1: CONSULTA
-            # ==============================
-            if azione == "consulta":
-                prenotazioni = conn.execute("""
-                    SELECT p.id, p.data, p.persone, p.stato, p.segnala_celiachia,
-                           t.nome AS turno, t.orario,
-                           tv.id AS tavolo, tv.zona
-                    FROM prenotazioni AS p
-                    JOIN clienti AS c ON c.id = p.cliente_id
-                    JOIN turni AS t ON t.id = p.turno_id
-                    JOIN tavoli AS tv ON tv.id = p.tavolo_id
-                    WHERE c.telefono = ?
-                      AND p.stato IN ('confermata', 'in_attesa_acconto')
-                      AND p.data >= date('now', 'localtime')
-                    ORDER BY p.data, t.orario
-                """, (telefono,)).fetchall()
+    tel = normalizza_telefono(telefono)
+    if not telefono_valido(tel):
+        return "Errore: inserisci il numero di telefono della prenotazione."
 
-                adesso = datetime.now()
-                righe = []
+    try:
+        with closing(connetti_db()) as conn:
+            attive = prenotazioni_attive(conn, tel)
 
-                for p in prenotazioni:
-                    # salto i turni di oggi già passati
-                    inizio = datetime.strptime(p["data"] + " " + p["orario"], "%Y-%m-%d %H:%M")
-                    if adesso > inizio + timedelta(minutes=MINUTI_TOLLERANZA):
-                        continue
-
-                    celiachia_str = " (Celiachia segnalata)" if p["segnala_celiachia"] == 1 else ""
-                    testo = (
-                        f"- Codice {p['id']}: {p['data']}, turno {p['turno']} ({p['orario']}), "
-                        f"{p['persone']} persone, tavolo {p['tavolo']} (zona {p['zona']}), "
-                        f"stato: {p['stato']}{celiachia_str}"
-                    )
-
-                    importo = acconto_richiesto(p["persone"])
-                    if importo > 0:
-                        testo += f"\n  Acconto: {importo} euro, da pagare entro 48 ore dalla prenotazione."
-
-                    righe.append(testo)
-
-                if len(righe) == 0:
+            if az == "consulta":
+                if not attive:
                     return "Non ho trovato prenotazioni attive per questo numero di telefono."
-
                 return (
-                    "Prenotazioni trovate:\n" + "\n".join(righe)
-                    + f"\n\nRegole: si prenota fino a {GIORNI_MAX_ANTICIPO} giorni prima, "
-                    f"da {PERSONE_MIN} a {PERSONE_MAX} persone."
+                    "Prenotazioni trovate:\n" + "\n".join(descrivi_prenotazione(p) for p in attive)
+                    + "\n\nRegole: si prenota fino a "
+                    f"{GIORNI_MAX_ANTICIPO} giorni prima, da {PERSONE_MIN} a {PERSONE_MAX} persone. "
+                    f"Per i gruppi oltre {SOGLIA_ACCONTO} persone serve un acconto di {ACCONTO_A_PERSONA} euro "
+                    f"a persona entro 48 ore. La disdetta è gratuita fino a {ORE_DISDETTA_GRATUITA} ore prima; "
+                    f"dopo, i gruppi con acconto lo perdono. Il tavolo viene tenuto {MINUTI_TOLLERANZA} minuti "
+                    f"dopo l'inizio del turno."
                 )
 
-            # ==============================
-            # PARTE 2: ANNULLA
-            # ==============================
-            if not prenotazione_id:
-                return "Errore: dimmi il codice della prenotazione da annullare."
+            # ---- annulla ----
+            pid = a_intero(prenotazione_id)
+            if pid is None:
+                if len(attive) == 1:
+                    pid = attive[0]["id"]
+                elif not attive:
+                    return "Non ho trovato prenotazioni attive per questo numero di telefono."
+                else:
+                    return ("Ci sono più prenotazioni attive, dimmi il codice di quella da annullare:\n"
+                            + "\n".join(descrivi_prenotazione(p) for p in attive))
 
-            # cerco la prenotazione (deve essere di quel telefono)
             p = conn.execute("""
-                SELECT p.id, p.data, p.persone, p.stato, t.orario
+                SELECT p.id, p.data, p.persone, p.stato, t.nome AS turno, t.orario
                 FROM prenotazioni AS p
                 JOIN clienti AS c ON c.id = p.cliente_id
                 JOIN turni AS t ON t.id = p.turno_id
                 WHERE p.id = ? AND c.telefono = ?
-            """, (prenotazione_id, telefono)).fetchone()
-
+            """, (pid, tel)).fetchone()
             if p is None:
                 return "Errore: non esiste una prenotazione con questo codice per questo telefono."
-
-            if p["stato"] not in (STATO_CONFERMATA, STATO_ATTESA_ACCONTO):
+            if p["stato"] not in STATI_ATTIVI:
                 return f"La prenotazione {p['id']} non è attiva (stato: {p['stato']})."
 
-            inizio_turno = datetime.strptime(p["data"] + " " + p["orario"], "%Y-%m-%d %H:%M")
+            inizio = datetime.strptime(f"{p['data']} {p['orario']}", "%Y-%m-%d %H:%M")
             adesso = datetime.now()
+            if adesso > inizio + timedelta(minutes=MINUTI_TOLLERANZA):
+                return (f"Il turno è iniziato da più di {MINUTI_TOLLERANZA} minuti, quindi il tavolo "
+                        f"non è più tenuto e non posso annullare la prenotazione.")
 
-            # il tavolo viene tenuto solo 15 minuti dopo l'inizio del turno
-            if adesso > inizio_turno + timedelta(minutes=MINUTI_TOLLERANZA):
-                return (
-                    f"Il turno è iniziato da più di {MINUTI_TOLLERANZA} minuti, quindi il tavolo "
-                    f"non è più tenuto e non posso annullare la prenotazione."
-                )
-
-            # disdetta gratuita solo fino a 24 ore prima
-            disdetta_in_ritardo = (inizio_turno - adesso) < timedelta(hours=ORE_DISDETTA_GRATUITA)
-
-            # l'acconto si perde solo per i gruppi con acconto
             importo = acconto_richiesto(p["persone"])
-            perde_acconto = disdetta_in_ritardo and importo > 0
+            in_ritardo = (inizio - adesso) < timedelta(hours=ORE_DISDETTA_GRATUITA)
+            perde_acconto = in_ritardo and importo > 0
+    except Exception as e:
+        return f"Errore durante l'operazione: {e}"
 
-            if perde_acconto and not conferma_perdita_acconto:
-                return (
-                    f"Attenzione: mancano meno di {ORE_DISDETTA_GRATUITA} ore al turno. "
-                    f"Se annulli ora perdi l'acconto di {importo} euro. "
-                    f"Chiedi al cliente se vuole continuare e poi richiama il tool "
-                    f"con conferma_perdita_acconto=True."
-                )
+    # conferma del cliente PRIMA di annullare (fuori da ogni try/except)
+    conferma = interrupt({
+        "domanda": "Confermi l'annullamento?",
+        "codice": p["id"],
+        "data": p["data"],
+        "turno": f"{p['turno']} ({p['orario']})",
+        "persone": p["persone"],
+        "perdi_acconto_euro": importo if perde_acconto else 0,
+    })
+    if not a_bool(conferma):
+        return f"Annullamento non confermato: la prenotazione {p['id']} resta attiva."
 
-            conn.execute(
-                "UPDATE prenotazioni SET stato = ? WHERE id = ?",
-                (STATO_ANNULLATA, p["id"])
-            )
+    try:
+        with closing(connetti_db()) as conn:
+            cur = conn.execute(
+                "UPDATE prenotazioni SET stato = ? WHERE id = ? AND stato IN ('confermata', 'in_attesa_acconto')",
+                (STATO_ANNULLATA, p["id"]))
             conn.commit()
+            if cur.rowcount == 0:
+                return f"La prenotazione {p['id']} non risulta più attiva."
+    except Exception as e:
+        return f"Errore durante l'annullamento: {e}"
 
-            if perde_acconto:
-                return f"Prenotazione {p['id']} annullata. L'acconto non viene restituito."
-            return f"Prenotazione {p['id']} annullata con successo."
-
-        except Exception as e:
-            conn.rollback()
-            return f"Errore durante l'operazione: {str(e)}"
-
-
-# Per provare i tool senza l'agente (crea_prenotazione ha l'interrupt,
-# quindi si prova solo dentro il grafo con il checkpointer).
-if __name__ == "__main__":
-    print(DB_PATH, DB_PATH.exists())
-    print(verifica_disponibilita.invoke({"data": "2026-11-10", "turno_id": 1, "persone": 4}))
-    print(annulla_o_consulta.invoke({"azione": "consulta", "telefono": "3331234567"}))
+    if perde_acconto:
+        return f"Prenotazione {p['id']} annullata. Essendo meno di {ORE_DISDETTA_GRATUITA} ore al turno, l'acconto di {importo} euro non viene restituito."
+    return f"Prenotazione {p['id']} annullata con successo."

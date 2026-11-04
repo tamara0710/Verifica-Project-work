@@ -241,9 +241,9 @@ graph = builder.compile(checkpointer=memory)
 # 6. TEST ESECUZIONE (CON GESTIONE INTERRUPT)
 
 if __name__ == "__main__":
-    config = {"configurable": {"thread_id": "sessione_tavolo_1"}}
+    config = {"configurable": {"thread_id": "sessione_tavolo_2"}}
 
-    domanda_1 = "Ciao, mi chiamo Mario Rossi, voglio inserire una prenotazione per 2 persone per il 2026-11-10 a pranzo (turno 1), il mio numero è 3295680987"
+    domanda_1 = "Ciao, mi chiamo Cristiano Ronaldo, voglio prenotare un tavolo per 5 persone per il 2026-11-10 a pranzo (turno 1), il mio numero è 347557777"
     print(f"=== TEST PRENOTAZIONE DB: {domanda_1} ===")
     
     # 1. Prima invocazione del grafo

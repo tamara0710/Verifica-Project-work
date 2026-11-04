@@ -11,6 +11,9 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from typing import Optional
+from langchain_core.tools import tool
+
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
@@ -328,7 +331,7 @@ def crea_prenotazione(
 def annulla_o_consulta(
     azione: str,
     telefono: str,
-    prenotazione_id: int = 0,
+    prenotazione_id: Optional[int] = None,
     conferma_perdita_acconto: bool = False,
 ) -> str:
     """Consulta o annulla le prenotazioni di un cliente usando il suo telefono.
@@ -402,7 +405,7 @@ def annulla_o_consulta(
             # ==============================
             # PARTE 2: ANNULLA
             # ==============================
-            if prenotazione_id == 0:
+            if not prenotazione_id:
                 return "Errore: dimmi il codice della prenotazione da annullare."
 
             # cerco la prenotazione (deve essere di quel telefono)

@@ -1,4 +1,5 @@
 pypdf>=5.0,<7.0
+pymupdf4llm
 langgraph
 langgraph-checkpoint-sqlite
 langchain

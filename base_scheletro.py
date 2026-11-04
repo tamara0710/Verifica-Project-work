@@ -1,13 +1,13 @@
 """Pattern CRAG con routing a 3 vie (CAG / RAG / DB) e guardrail anti-allucinazione severo."""
 from pathlib import Path
-from typing import TypedDict, Annotated, Literal, Optional
+from typing import TypedDict, Annotated, Literal
 from pydantic import BaseModel, Field
-from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from config import get_llm, get_embeddings
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langgraph.graph.message import add_messages
+from langgraph.types import Command
 
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
@@ -15,6 +15,12 @@ from langchain_chroma import Chroma
 from src.database.connection import crea_tabelle_complete
 from src.database import repositories
 from src.utils import da_pdf_a_md, carica_md_in_vectorstore, carica_md_in_vectorstore_con_ParentDocumentRetriever
+
+from src.database.repositories import (
+    verifica_disponibilita,
+    crea_prenotazione,
+    annulla_o_consulta
+)
 
 
 # 1. INIZIALIZZAZIONE DB E CAG
@@ -86,7 +92,6 @@ class ClassificaIntento(BaseModel):
             "- 'menu': piatti, prezzi, allergeni, celiachia/glutine, vegani, ORARI, turni, CANI/ANIMALI DOMESTICI, coperto, acconti e disdette.\n"
             "- 'prenotazione': intenzione ESPLICITA di prenotare un tavolo o chiedere disponibilità posti."
         )
-    )
 
 class Giudizio(BaseModel):
     pertinente: bool = Field(description="I documenti estratti consentono di rispondere alla domanda?")
@@ -138,7 +143,12 @@ def gestisci_cag(state: State) -> dict:
 def recupera(state: State) -> dict:
     print("--- [NODO] ESECUZIONE RAG (recupera) ---")
     q = state.get("query") or state["domanda"]
-    return {"documenti": [d.page_content for d in retriever.invoke(q)]}
+    print("\n🔍 RAG: Recupero documenti da Chroma Vectorstore...")
+    print(f"📥 Query di ricerca: '{q}'")
+    docs_estrattti = retriever.invoke(q)
+    print(f"📄 Documenti trovati: {len(docs_estrattti)} chunk")
+    print("-" * 50)
+    return {"documenti": [d.page_content for d in docs_estrattti]}
 
 def valuta(state: State) -> dict:
     prompt = (
@@ -147,12 +157,16 @@ def valuta(state: State) -> dict:
         "Valuta se i documenti contengono informazioni utili per rispondere alla domanda."
     )
     g = grader.invoke(prompt)
+
+    print(f"⚖️ Valutazione Pertinenza Documenti: {g.pertinente}")
+    print("-" * 50)
     return {"pertinente": g.pertinente}
 
 def riscrivi(state: State) -> dict:
     q = llm.invoke(
         f"Riformula come query di ricerca breve focalizzata su piatti, ingredienti o allergeni del menu: {state['domanda']}"
     ).content
+    print(f"🔄 Riformulazione Query RAG: '{q}'")
     return {"query": q, "tentativi": state.get("tentativi", 0) + 1} 
 
 
@@ -204,20 +218,51 @@ def non_so(state: State) -> dict:
 def gestisci_prenotazione(state: State) -> dict:
     print("--- [NODO] ESECUZIONE DB (prenotazione) ---")
     llm_with_tools = llm.bind_tools(tools_db)
+    
+    # SYSTEM PROMPT DIRETTIVO E RIGIDO
     prompt = (
         "Sei l'assistente virtuale della Trattoria Nonna Rosa per la gestione delle prenotazioni dei tavoli.\n\n"
         "GUARDRAIL DI SICUREZZA:\n"
         "1. NON invocare tool se l'utente non chiede esplicitamente di prenotare un tavolo.\n"
         "2. Se mancano parametri obbligatori (data YYYY-MM-DD, turno 1/2, persone, nome, telefono), richiedili SENZA eseguire tool."
+        "Sei l'assistente virtuale della Trattoria Nonna Rosa per la gestione delle prenotazioni.\n\n"
+        "ISTRUZIONI OBBLIGATORIE PER LA SCELTA DEGLI STRUMENTI:\n"
+        "1. Se il cliente chiede di PRENOTARE / CREARE una prenotazione e ti ha fornito i 5 dati fondamentali "
+        "(Nome, Telefono, Data YYYY-MM-DD, Turno ID 1 o 2, Numero Persone), DEVI CHIAMARE TASSATIVAMENTE 'crea_prenotazione'.\n"
+        "   - NON chiamare 'verifica_disponibilita': il tool 'crea_prenotazione' fa già il controllo di disponibilità da solo!\n"
+        "2. Usa 'verifica_disponibilita' ESCLUSIVAMENTE se la domanda è solo informativa (es. 'C'è posto per 4 persone domani?').\n"
+        "3. Usa 'annulla_o_consulta' solo se il cliente vuole vedere o cancellare sue prenotazioni esistenti.\n\n"
+        "MAPPATURA TURNI: 1 = Pranzo (12:30), 2 = Cena.\n"
+        "Se mancano dati obbligatori per completare la prenotazione, NON usare strumenti e chiedi i dati mancanti all'utente."
     )
     msg = llm_with_tools.invoke([SystemMessage(content=prompt), HumanMessage(content=state["domanda"])])
     
     if msg.tool_calls:
+        print("\n" + "="*50)
+        print("🛠️  TOOL CALLING RILEVATA DALL'LLM (DATABASE)")
+        print("="*50)
+        
         esiti = []
         for call in msg.tool_calls:
-            tool_func = tools_map[call["name"]]
-            esiti.append(tool_func.invoke(call["args"]))
-        
+            nome_tool = call["name"]
+            argomenti = call["args"]
+            
+            # --- STAMPA A TERMINALE DEL TOOL USATO E DEI PARAMETRI ---
+            print(f"🔧 Tool invocato: {nome_tool}")
+            print(f"📥 Argomenti passati: {argomenti}")
+            
+            tool_func = tools_map[nome_tool]
+            
+            # Nota: poiché crea_prenotazione contiene un interrupt(),
+            # l'esecuzione scatenerà l'interruzione di LangGraph per la conferma.
+            esito = tool_func.invoke(argomenti)
+            
+            print(f"📤 Risultato del Tool: {esito}")
+            print("-" * 50)
+            
+            esiti.append(esito)
+
+        # Genera la risposta finale all'utente sintetizzando il risultato dell'operazione
         risposta_finale = llm.invoke(
             f"Domanda utente: {state['domanda']}\n"
             f"Esito operazione Database: {' | '.join(esiti)}\n\n"
@@ -225,6 +270,8 @@ def gestisci_prenotazione(state: State) -> dict:
         ).content
         return {"risposta": risposta_finale}
     
+    # Se l'LLM risponde direttamente senza usare tool
+    print("\nℹ️  Nessun tool invocato per questa richiesta.")
     return {"risposta": msg.content}
 
 
@@ -272,43 +319,73 @@ memory = MemorySaver()
 graph = builder.compile(checkpointer=memory)
 
 
-from pathlib import Path
 
-# Determina la cartella corrente dello script .py
-base_dir = Path(__file__).parent if "__file__" in globals() else Path.cwd()
-output_path = base_dir / "grafo_langgraph.png"
+# from pathlib import Path
 
-try:
-    # Ottiene i dati binari del PNG generato da Mermaid e li scrive su file
-    png_data = graph.get_graph().draw_mermaid_png()
-    output_path.write_bytes(png_data)
-    print(f"🎉 Grafo salvato con successo in: {output_path.resolve()}")
-except Exception as e:
-    print(f"❌ Impossibile generare l'immagine: {e}")
+# # Determina la cartella corrente dello script .py
+# base_dir = Path(__file__).parent if "__file__" in globals() else Path.cwd()
+# output_path = base_dir / "grafo_langgraph.png"
+
+# try:
+#     # Ottiene i dati binari del PNG generato da Mermaid e li scrive su file
+#     png_data = graph.get_graph().draw_mermaid_png()
+#     output_path.write_bytes(png_data)
+#     print(f"🎉 Grafo salvato con successo in: {output_path.resolve()}")
+# except Exception as e:
+#     print(f"❌ Impossibile generare l'immagine: {e}")
 
 
-# 6. BATTERIA DI TEST
+# 6. TEST ESECUZIONE (CON GESTIONE INTERRUPT)
 
 if __name__ == "__main__":
-    test_cases = [
-        ("TC-01", "Qual è il numero di telefono e l'indirizzo?", "CAG (FAQ)"),
-        ("TC-02", "Quali sono gli orari di apertura del weekend?", "RAG (Orari Menu)"),
-        ("TC-03", "Posso portare un cane in trattoria?", "RAG (Regole Cani)"),
-        ("TC-04", "Quali primi senza glutine ci sono?", "RAG (Menu SG)"),
-        ("TC-05", "Ci sono piatti vegani tra i dolci o gli antipasti?", "RAG (Menu Vegan)"),
-        ("TC-06", "Le orecchiette alle cime di rapa contengono pesce o lattosio?", "RAG (Allergeni)"),
-        ("TC-07", "Avete la pizza margherita o i panini?", "RAG (Piatto assente)"),
-        ("TC-08", "Vorrei informazioni sulla caparra per i gruppi", "RAG (Acconti)"),
-    ]
+#####======= TEST GIANLUCA
+    # test_cases = [
+    #     ("TC-01", "Qual è il numero di telefono e l'indirizzo?", "CAG (FAQ)"),
+    #     ("TC-02", "Quali sono gli orari di apertura del weekend?", "RAG (Orari Menu)"),
+    #     ("TC-03", "Posso portare un cane in trattoria?", "RAG (Regole Cani)"),
+    #     ("TC-04", "Quali primi senza glutine ci sono?", "RAG (Menu SG)"),
+    #     ("TC-05", "Ci sono piatti vegani tra i dolci o gli antipasti?", "RAG (Menu Vegan)"),
+    #     ("TC-06", "Le orecchiette alle cime di rapa contengono pesce o lattosio?", "RAG (Allergeni)"),
+    #     ("TC-07", "Avete la pizza margherita o i panini?", "RAG (Piatto assente)"),
+    #     ("TC-08", "Vorrei informazioni sulla caparra per i gruppi", "RAG (Acconti)"),
+    # ]
 
-    print("==================================================")
-    print("      AVVIO BATTERIA DI TEST CORRETTA             ")
-    print("==================================================\n")
+    # print("==================================================")
+    # print("      AVVIO BATTERIA DI TEST CORRETTA             ")
+    # print("==================================================\n")
 
-    for test_id, domanda, descrizione in test_cases:
-        config = {"configurable": {"thread_id": f"sessione_{test_id}"}}
-        print(f"[{test_id}] TEST: {descrizione}")
-        print(f"Domanda: \"{domanda}\"")
-        risultato = graph.invoke({"domanda": domanda}, config=config)
-        print(f"Risposta ottenuta:\n{risultato['risposta']}")
-        print("-" * 60 + "\n")
+    # for test_id, domanda, descrizione in test_cases:
+    #     config = {"configurable": {"thread_id": f"sessione_{test_id}"}}
+    #     print(f"[{test_id}] TEST: {descrizione}")
+    #     print(f"Domanda: \"{domanda}\"")
+    #     risultato = graph.invoke({"domanda": domanda}, config=config)
+    #     print(f"Risposta ottenuta:\n{risultato['risposta']}")
+    #     print("-" * 60 + "\n")
+
+#####======= TEST EDOARDO
+    config = {"configurable": {"thread_id": "sessione_tavolo_2"}}
+
+    domanda_1 = "Ciao, mi chiamo Cristiano Ronaldo, voglio prenotare un tavolo per 5 persone per il 2026-11-10 a pranzo (turno 1), il mio numero è 347557777"
+    print(f"=== TEST PRENOTAZIONE DB: {domanda_1} ===")
+    
+    # 1. Prima invocazione del grafo
+    r1 = graph.invoke({"domanda": domanda_1}, config=config)
+    
+    # 2. Controlliamo se il grafo si è fermato all'interrupt
+    stato = graph.get_state(config)
+    
+    if stato.next:
+        # Recuperiamo i dati passati dall'interrupt di crea_prenotazione
+        dati_interrupt = stato.tasks[0].interrupts[0].value
+        print("\n" + "="*50)
+        print("⏸️  INTERRUPT ATTIVATO (Richiesta conferma)")
+        print("="*50)
+        print(f"📋 Dettagli: {dati_interrupt}")
+        print("\n✅ Risposta utente all'interrupt: 'True' (Confermo)")
+        print("-" * 50)
+        
+        # 3. Riprendiamo l'esecuzione passando la conferma (resume=True)
+        r1 = graph.invoke(Command(resume=True), config=config)
+
+    # 4. Ora r1['risposta'] contiene l'esito finale dell'INSERT
+    print(f"\n💬 Risposta finale:\n{r1['risposta']}\n")

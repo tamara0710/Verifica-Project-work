@@ -92,6 +92,7 @@ class ClassificaIntento(BaseModel):
             "- 'menu': piatti, prezzi, allergeni, celiachia/glutine, vegani, ORARI, turni, CANI/ANIMALI DOMESTICI, coperto, acconti e disdette.\n"
             "- 'prenotazione': intenzione ESPLICITA di prenotare un tavolo o chiedere disponibilità posti."
         )
+    )
 
 class Giudizio(BaseModel):
     pertinente: bool = Field(description="I documenti estratti consentono di rispondere alla domanda?")

@@ -1,6 +1,6 @@
 """Pattern CRAG con routing a 3 vie (CAG / RAG / DB) e guardrail anti-allucinazione severo."""
 from pathlib import Path
-from typing import TypedDict, Annotated, Literal
+from typing import TypedDict, Annotated, Literal, Optional
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -8,6 +8,7 @@ from config import get_llm, get_embeddings
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
+from langchain_core.tools import tool
 
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
@@ -51,20 +52,91 @@ def controlla_disponibilita_tavoli(data: str, turno_id: int, persone: int) -> st
         return f"Nessun tavolo disponibile per {persone} persone il {data} (turno {turno_id})."
     return f"Tavolo disponibile trovato (ID Tavolo: {tavoli[0][0]}, Zona: {tavoli[0][2]})."
 
+# @tool
+# def salva_prenotazione(nome: str, telefono: str, data: str, turno_id: int, persone: int, email: str | None = None, note: str | None = "", celiachia: bool | None = False) -> str:
+#     """Registra e salva una prenotazione nel database della trattoria."""
+#     if celiachia is None:
+#         celiachia = False
+#     if note is None:
+#         note = ""
+#     if email is None:
+#         email = ""
+#     #tavoli = repositories.verifica_disponibilita(data, turno_id, persone)
+#     tavoli = repositories.verifica_disponibilita.invoke({"data": data, "turno_id": int(turno_id), "persone": int(persone)})
+#     if not tavoli:
+#         return "Impossibile prenotare: nessun tavolo libero."
+
+#     if email is None:
+#         email = ""
+#     cliente_id = repositories.trova_o_crea_cliente(nome, telefono, email=email)
+#     acconto = (persone * 10.0) if persone > 8 else 0.0
+#     testo_note = note if note is not None else ""
+#     prenotazione_id = repositories.inserisci_prenotazione(
+#         cliente_id, tavoli[0][0], turno_id, data, persone, testo_note, 1 if celiachia else 0, acconto
+#     )
+#     return f"Prenotazione confermata con ID #{prenotazione_id} a nome di {nome} per {persone} persone."
+
 @tool
-def salva_prenotazione(nome: str, telefono: str, data: str, turno_id: int, persone: int, email: Optional[str] = None, note: Optional[str] = "", celiachia: bool = False) -> str:
+def salva_prenotazione(
+    nome: str, 
+    telefono: str, 
+    data: str, 
+    turno_id: int, 
+    persone: int, 
+    email: str | None = None, 
+    note: str | None = "", 
+    celiachia: bool | None = False
+) -> str:
     """Registra e salva una prenotazione nel database della trattoria."""
-    tavoli = repositories.verifica_disponibilita(data, turno_id, persone)
-    if not tavoli:
-        return "Impossibile prenotare: nessun tavolo libero."
     
-    cliente_id = repositories.trova_o_crea_cliente(nome, telefono, email)
-    acconto = (persone * 10.0) if persone > 8 else 0.0
-    testo_note = note if note is not None else ""
+    # 1. Sanificazione e normalizzazione dei parametri opzionali per l'LLM
+    if celiachia is None:
+        celiachia = False
+    if note is None:
+        note = ""
+    if email is None:
+        email = ""
+
+    # 2. Verifica disponibilità tramite sotto-tool LangChain (.invoke)
+    risultato_tavoli = repositories.verifica_disponibilita.invoke({
+        "data": data, 
+        "turno_id": int(turno_id), 
+        "persone": int(persone)
+    })
+    
+    # Se il tool restituisce una stringa vuota, None o un messaggio di errore
+    if not risultato_tavoli or "nessun" in str(risultato_tavoli).lower():
+        return "Impossibile prenotare: nessun tavolo libero."
+
+    # 3. Gestione del cliente (creazione o recupero ID)
+    # Passa 'conn' come primo parametro posizionale
+    cliente_id = repositories.trova_o_crea_cliente(conn, nome=nome, telefono=telefono, email=email)
+    
+    # 4. Calcolo acconto e logica del tavolo scelto
+    acconto = (int(persone) * 10.0) if int(persone) > 8 else 0.0
+    
+    # Estraggo l'ID del tavolo: gestiamo sia una lista reale [[id, ...]] sia una stringa
+    # Se 'risultato_tavoli' è una lista/tupla estraiamo l'id, altrimenti usiamo il valore direttamente
+    if isinstance(risultato_tavoli, list) and len(risultato_tavoli) > 0:
+        tavolo_id = risultato_tavoli[0][0] if isinstance(risultato_tavoli[0], (list, tuple)) else resultado_tavoli[0]
+    else:
+        # Fallback sicuro se restituisce un ID singolo o stringa numerica
+        tavolo_id = risultato_tavoli
+
+    # 5. Inserimento della prenotazione finale
     prenotazione_id = repositories.inserisci_prenotazione(
-        cliente_id, tavoli[0][0], turno_id, data, persone, testo_note, 1 if celiachia else 0, acconto
+        cliente_id, 
+        tavolo_id, 
+        int(turno_id), 
+        data, 
+        int(persone), 
+        note, 
+        1 if celiachia else 0, 
+        acconto
     )
+    
     return f"Prenotazione confermata con ID #{prenotazione_id} a nome di {nome} per {persone} persone."
+
 
 tools_db = [controlla_disponibilita_tavoli, salva_prenotazione]
 tools_map = {t.name: t for t in tools_db}
@@ -92,6 +164,7 @@ class ClassificaIntento(BaseModel):
             "- 'menu': piatti, prezzi, allergeni, celiachia/glutine, vegani, ORARI, turni, CANI/ANIMALI DOMESTICI, coperto, acconti e disdette.\n"
             "- 'prenotazione': intenzione ESPLICITA di prenotare un tavolo o chiedere disponibilità posti."
         )
+    )
 
 class Giudizio(BaseModel):
     pertinente: bool = Field(description="I documenti estratti consentono di rispondere alla domanda?")

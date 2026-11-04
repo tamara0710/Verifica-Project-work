@@ -220,3 +220,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 config.py
+test.ipynb
+base_scheletro_old_1.py
+base_scheletro_old_2.py
+base_scheletro copy.py

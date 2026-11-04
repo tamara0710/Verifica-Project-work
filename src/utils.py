@@ -146,63 +146,6 @@ def carica_md_in_vectorstore():
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
     return retriever
 
-# ParentDocumentRetriever
-
-# from pathlib import Path
-# from langchain_chroma import Chroma
-# from langchain_core.documents import Document
-# from langchain_core.stores import InMemoryStore
-# from langchain_classic.retrievers import ParentDocumentRetriever
-# from langchain_text_splitters import RecursiveCharacterTextSplitter
-# from config import get_embeddings
-# import shutil
-
-# # Store globale in memoria per mantenere i documenti padre
-# store_doc_padre = InMemoryStore()
-
-# def carica_md_in_vectorstore_con_ParentDocumentRetriever():
-#     base_dir = Path(__file__).parent.parent if "__file__" in globals() else Path.cwd()
-#     md_path = base_dir / "data" / "menu_trattoria.md"
-#     persist_dir = base_dir / "chroma_db"
-
-#     # Reset automatico del database vettoriale se esiste
-#     if persist_dir.exists():
-#         shutil.rmtree(persist_dir)
-#         print("🗑️ Vecchio ChromaDB rimosso con successo.")
-
-#     if not md_path.exists():
-#         raise FileNotFoundError(f"Il file Markdown non esiste in {md_path.resolve()}.")
-
-#     contenuto_markdown = md_path.read_text(encoding="utf-8")
-    
-#     # Il Documento Padre è l'intero file menu_trattoria.md
-#     doc_padre = [Document(page_content=contenuto_markdown, metadata={"source": md_path.name})]
-
-#     # 1. Inizializza il Vectorstore Chroma per i Child Chunks
-#     vectorstore = Chroma(
-#         collection_name="menu_trattoria_childs",
-#         embedding_function=get_embeddings(),
-#         persist_directory=str(persist_dir)
-#     )
-
-#     # 2. Configura lo Splitter per i frammenti figli (piccoli per massima precisione vettoriale)
-#     child_splitter = RecursiveCharacterTextSplitter(chunk_size=150, chunk_overlap=20)
-
-#     # 3. Inizializza il ParentDocumentRetriever
-#     # parent_splitter=None significa che l'intero file .md viene usato come Padre
-#     retriever = ParentDocumentRetriever(
-#         vectorstore=vectorstore,
-#         docstore=store_doc_padre,
-#         child_splitter=child_splitter,
-#         parent_splitter=None,
-#     )
-
-#     # 4. Aggiungi il documento padre (il retriever genererà i figli in Chroma in automatico)
-#     retriever.add_documents(doc_padre, ids=["menu_completo_parent"])
-#     print("ParentDocumentRetriever inizializzato con successo!")
-
-#     return retriever
-
 import shutil
 from pathlib import Path
 from langchain_chroma import Chroma
@@ -246,6 +189,7 @@ def carica_md_in_vectorstore_con_ParentDocumentRetriever():
 
     # 2. Splitter per i frammenti figli (150 caratteri per alta precisione vettoriale)
     child_splitter = RecursiveCharacterTextSplitter(chunk_size=150, chunk_overlap=20)
+    #child_splitter = RecursiveCharacterTextSplitter(chunk_size=550, chunk_overlap=100)
 
     # 3. Inizializzazione ParentDocumentRetriever
     retriever = ParentDocumentRetriever(
@@ -257,6 +201,7 @@ def carica_md_in_vectorstore_con_ParentDocumentRetriever():
 
     # 4. Indicizzazione automatica del padre e generazione figli in Chroma
     retriever.add_documents(doc_padre, ids=["menu_completo_parent"])
+    #retriever.search_kwargs = {"k": 6}
     print("✅ ParentDocumentRetriever inizializzato e sincronizzato con successo!")
 
     return retriever

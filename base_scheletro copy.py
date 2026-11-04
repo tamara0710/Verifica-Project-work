@@ -1,0 +1,420 @@
+"""Pattern CRAG con routing a 3 vie (CAG / RAG / DB) e guardrail anti-allucinazione severo."""
+from pathlib import Path
+from typing import TypedDict, Annotated, Literal, Optional
+from pydantic import BaseModel, Field
+from langchain_core.tools import tool
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
+from config import get_llm, get_embeddings
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
+from langgraph.graph.message import add_messages
+
+from langchain_core.documents import Document
+from langchain_chroma import Chroma
+
+from src.database.connection import crea_tabelle_complete
+from src.database import repositories
+from src.utils import da_pdf_a_md, carica_md_in_vectorstore, carica_md_in_vectorstore_con_ParentDocumentRetriever
+
+
+# 1. INIZIALIZZAZIONE DB E CAG
+
+da_pdf_a_md()
+crea_tabelle_complete()
+retriever = carica_md_in_vectorstore_con_ParentDocumentRetriever()
+
+BASE_DIR = Path(__file__).parent
+PATH_INFO = BASE_DIR / "data" / "info_trattoria.md"
+
+def carica_info_cag() -> str:
+    if PATH_INFO.exists():
+        return PATH_INFO.read_text(encoding="utf-8")
+    print("⚠️ WARNING: info_trattoria.md non trovato.")
+    return ""
+
+CONTESTO_CAG = carica_info_cag()
+
+
+# 2. STRUMENTI DB (PRENOTAZIONI)
+
+@tool
+def controlla_disponibilita_tavoli(data: str, turno_id: int, persone: int) -> str:
+    """Verifica disponibilità tavoli per una data (YYYY-MM-DD), turno (1=Pranzo, 2=Cena) e numero persone."""
+    tavoli = repositories.verifica_disponibilita(data, turno_id, persone)
+    if not tavoli:
+        return f"Nessun tavolo disponibile per {persone} persone il {data} (turno {turno_id})."
+    return f"Tavolo disponibile trovato (ID Tavolo: {tavoli[0][0]}, Zona: {tavoli[0][2]})."
+
+@tool
+def salva_prenotazione(nome: str, telefono: str, data: str, turno_id: int, persone: int, email: Optional[str] = None, note: Optional[str] = "", celiachia: bool = False) -> str:
+    """Registra e salva una prenotazione nel database della trattoria."""
+    tavoli = repositories.verifica_disponibilita(data, turno_id, persone)
+    if not tavoli:
+        return "Impossibile prenotare: nessun tavolo libero."
+    
+    cliente_id = repositories.trova_o_crea_cliente(nome, telefono, email)
+    acconto = (persone * 10.0) if persone > 8 else 0.0
+    testo_note = note if note is not None else ""
+    prenotazione_id = repositories.inserisci_prenotazione(
+        cliente_id, tavoli[0][0], turno_id, data, persone, testo_note, 1 if celiachia else 0, acconto
+    )
+    return f"Prenotazione confermata con ID #{prenotazione_id} a nome di {nome} per {persone} persone."
+
+tools_db = [controlla_disponibilita_tavoli, salva_prenotazione]
+tools_map = {t.name: t for t in tools_db}
+
+
+# 3. CLASSIFICAZIONE INTENTO
+
+llm = get_llm()
+
+class State(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+    domanda: str
+    intento: str
+    query: str
+    documenti: list[str]
+    pertinente: bool
+    tentativi: int
+    risposta: str
+    esito_cag: bool
+
+class ClassificaIntento(BaseModel):
+    intento: Literal["info_generali", "menu", "prenotazione"] = Field(
+        description=(
+            "- 'info_generali': contatti (telefono, email), indirizzo, Wi-Fi, parcheggio, accessibilità disabili.\n"
+            "- 'menu': piatti, prezzi, allergeni, celiachia/glutine, vegani, ORARI, turni, CANI/ANIMALI DOMESTICI, coperto, acconti e disdette.\n"
+            "- 'prenotazione': intenzione ESPLICITA di prenotare un tavolo o chiedere disponibilità posti."
+        )
+    )
+
+class Giudizio(BaseModel):
+    pertinente: bool = Field(description="I documenti estratti consentono di rispondere alla domanda?")
+
+classifier = llm.with_structured_output(ClassificaIntento)
+grader = get_llm().with_structured_output(Giudizio)
+
+
+# 4. NODI DEL GRAFO
+
+def classifica_intento(state: State) -> dict:
+    system_prompt = (
+        "Sei un classificatore di intenti rigido per l'assistente della Trattoria Nonna Rosa.\n\n"
+        "REGOLE TASSATIVE PER LA CLASSIFICAZIONE:\n"
+        "1. 'info_generali' (CAG): Solo per contatti (telefono, email), indirizzo, Wi-Fi, parcheggio convenzionato e accessibilità disabili.\n"
+        "2. 'menu' (RAG): Per QUALSIASI domanda su piatti, ingredienti, allergeni, celiachia, piatti vegani, "
+        "ORARI DI APERTURA, turni, CANI/ANIMALI DOMESTICI, costo coperto, acconti/caparra e disdette.\n"
+        "3. 'prenotazione' (DB): SOLO ED ESCLUSIVAMENTE se l'utente esprime la VOLONTÀ ESPLICITA di PRENOTARE UN TAVOLO o chiedere disponibilità posti."
+    )
+    res = classifier.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"Domanda dell'utente: {state['domanda']}")
+    ])
+    print(f"--- [ROUTING] Intento rilevato: {res.intento} ---")
+    return {"intento": res.intento}
+
+def gestisci_cag(state: State) -> dict:
+    print("--- [NODO] ESECUZIONE CAG ---")
+    if not CONTESTO_CAG or not CONTESTO_CAG.strip():
+        print("--> CAG vuoto, passaggio al RAG...")
+        return {"esito_cag": False}
+
+    prompt = (
+        "Sei l'assistente della Trattoria Nonna Rosa.\n"
+        "Rispondi alla domanda usando ESCLUSIVAMENTE il testo delle informazioni generali seguenti.\n"
+        "Se l'informazione NON è presente nel testo, rispondi tassativamente: 'NON_TROVATO'.\n\n"
+        f"--- INFORMAZIONI GENERALI ---\n{CONTESTO_CAG}\n-----------------------------\n\n"
+        f"Domanda: {state['domanda']}"
+    )
+    res = llm.invoke(prompt).content.strip()
+    
+    if "NON_TROVATO" not in res.upper():
+        print("--> CAG: Risposta generata con successo dalle FAQ.")
+        return {"risposta": res, "esito_cag": True}
+    
+    print("--> CAG: Dato non presente nelle FAQ. Passaggio al RAG...")
+    return {"esito_cag": False}
+
+def recupera(state: State) -> dict:
+    print("--- [NODO] ESECUZIONE RAG (recupera) ---")
+    q = state.get("query") or state["domanda"]
+    return {"documenti": [d.page_content for d in retriever.invoke(q)]}
+
+def valuta(state: State) -> dict:
+    prompt = (
+        f"Domanda: {state['domanda']}\n"
+        f"Documenti tratti dal menu: {state['documenti']}\n\n"
+        "Valuta se i documenti contengono informazioni utili per rispondere alla domanda."
+    )
+    g = grader.invoke(prompt)
+    return {"pertinente": g.pertinente}
+
+def riscrivi(state: State) -> dict:
+    q = llm.invoke(
+        f"Riformula come query di ricerca breve focalizzata su piatti, ingredienti o allergeni del menu: {state['domanda']}"
+    ).content
+    return {"query": q, "tentativi": state.get("tentativi", 0) + 1} 
+
+# def genera(state: State) -> dict:
+#     print("--- [NODO] ESECUZIONE RAG (genera) ---")
+#     documenti = state.get("documenti", [])
+#     if not documenti:
+#         return {"risposta": "Mi dispiace, non ho trovato informazioni rilevanti nel menu per rispondere alla tua richiesta."}
+
+#     ctx = "\n\n".join(documenti)
+
+#     system_prompt = (
+#         "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
+#         "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sul contesto estratto dal menu fornito sottostante.\n\n"
+#         "REGOLE RIGIDE PER L'INTERPRETAZIONE DEL TESTO E DELLE TABELLE:\n"
+#         "1. INTERPRETAZIONE ALLERGENI:\n"
+#         "   - La colonna 'Allergeni' elenca le sostanze PRESENTI nel piatto.\n"
+#         "   - Se la colonna Allergeni di un piatto contiene una sostanza (es. 'glutine'), quel piatto CONTIENE quella sostanza. È un errore critico indicare che ne sia privo.\n"
+#         "2. IDENTIFICAZIONE OPZIONI SPECIALI (Celiachia/Vegano):\n"
+#         "   - Considera 'senza glutine' o 'vegano' unicamente i piatti che riportano l'indicazione esplicita nel nome/descrizione (es. '(senza glutine)', '(vegano)') oppure le varianti su richiesta descritte nelle note generali.\n"
+#         "3. DIVIETO ASSOLUTO DI ALLUCINAZIONE:\n"
+#         "   - Basa la risposta SOLO sui piatti, prezzi e note realmente presenti nel testo fornito.\n"
+#         "   - Se un ingrediente, piatto o prodotto richiesto non è presente nel testo (es. pizza, panini), dichiara chiaramente che non è presente nel menu senza inventare piatti o alternative non scritte.\n"
+#         "4. PRECISIONE SULLE NOTE:\n"
+#         "   - Quando rispondi a domande su intolleranze, orari o regole del locale, controlla sempre sia le tabelle dei piatti sia le sezioni di note/regolamento estratte."
+#     )
+    
+#     user_prompt = (
+#         f"--- CONTESTO ESTRATTO DAL MENU ---\n{ctx}\n-----------------------------------\n\n"
+#         f"Domanda dell'utente: {state['domanda']}"
+#     )
+
+#     r = llm.invoke([
+#         SystemMessage(content=system_prompt),
+#         HumanMessage(content=user_prompt)
+#     ])
+#     return {"risposta": r.content}
+
+# def genera(state: State) -> dict:
+#     print("--- [NODO] ESECUZIONE RAG (genera) ---")
+#     documenti = state.get("documenti", [])
+#     if not documenti:
+#         return {"risposta": "Mi dispiace, non ho trovato informazioni rilevanti nel menu per rispondere alla tua richiesta."}
+
+#     ctx = "\n\n".join(documenti)
+
+#     system_prompt = (
+#         "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
+#         "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sul testo del menu e del regolamento fornito.\n\n"
+#         "REGOLE PER L'LLM:\n"
+#         "1. ALLERGENI: Se la colonna 'Allergeni' di una riga riporta una sostanza (es. glutine), quel piatto CONTIENE quella sostanza. Dichiara 'senza glutine' o 'vegano' solo i piatti espressamente etichettati come tali nel nome o descritti nelle note.\n"
+#         "2. ZERO ALLUCINAZIONI: Se un piatto o un alimento non è presente nel testo (es. pizza o panini), dichiara esplicitamente che non è in menu senza inventare alternative.\n"
+#         "3. COMPLETEZZA: Quando si chiedono opzioni per celiaci o allergie, controlla sia le tabelle sia la sezione 'Note per gli ospiti'."
+#     )
+    
+#     user_prompt = (
+#         f"--- MENU E REGOLAMENTO COMPLETO ---\n{ctx}\n-----------------------------------\n\n"
+#         f"Domanda dell'utente: {state['domanda']}"
+#     )
+
+#     r = llm.invoke([
+#         SystemMessage(content=system_prompt),
+#         HumanMessage(content=user_prompt)
+#     ])
+#     return {"risposta": r.content}
+
+def genera(state: State) -> dict:
+    print("--- [NODO] ESECUZIONE RAG (genera) ---")
+    documenti = state.get("documenti", [])
+    if not documenti:
+        return {"risposta": "Mi dispiace, non ho trovato informazioni rilevanti nel menu per rispondere alla tua richiesta."}
+
+    ctx = "\n\n".join(documenti)
+
+    # system_prompt = (
+    #     "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
+    #     "Rispondi basandoti ESCLUSIVAMENTE sul contesto estratto dal menu e regolamento forniti.\n\n"
+    #     "ISTRUZIONI RIGIDE PER LA LETTURA DELLE TABELLE (ISOLAMENTO DELLE RIGHE):\n"
+    #     "1. ISOLAMENTO RIGHE TABELLA:\n"
+    #     "   - Ogni riga della tabella è un piatto INDIPENDENTE. È VIETATO attribuire a un piatto gli allergeni scritti nelle righe adiacenti.\n"
+    #     "   - Per verificare gli allergeni di un piatto, analizza ESCLUSIVAMENTE il testo presente nella colonna 'Allergeni' della SUA riga.\n\n"
+    #     "2. LOGICA CELIACHIA E GLUTINE:\n"
+    #     "   - Se la colonna 'Allergeni' di una riga contiene la parola 'glutine', quel piatto CONTIENE GLUTINE (NON è senza glutine!).\n"
+    #     "   - Un piatto è idoneo ai celiaci / senza glutine SOLO SE ha la dicitura '(senza glutine)' nel nome OPPURE se la colonna Allergeni della sua riga NON contiene 'glutine'.\n"
+    #     "   - Ricorda di verificare anche la sezione 'Note per gli ospiti' per eventuali opzioni su richiesta (es. pasta senza glutine).\n\n"
+    #     "3. LOGICA SUI LATTIICINI E ALLERGENI SPECIFICI:\n"
+    #     "   - Se nella cella 'Allergeni' di un piatto NON c'è la parola 'latte', quel piatto NON contiene latte o lattosio.\n\n"
+    #     "4. ZERO ALLUCINAZIONI:\n"
+    #     "   - Se un alimento non è presente (es. pizza, panini), dichiara chiaramente che non è in menu senza inventare alternative."
+    # )
+
+    # system_prompt = (
+    #     "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
+    #     "Rispondi basandoti ESCLUSIVAMENTE sul contesto estratto dal menu e regolamento forniti.\n\n"
+    #     "ISTRUZIONI RIGIDE PER LA LETTURA DELLE TABELLE E DEL REGOLAMENTO:\n\n"
+    #     "1. REGOLE SUI CANI E ANIMALI DOMESTICI (TC-03 FIX):\n"
+    #     "   - Quando l'utente chiede se è possibile portare un cane/animale, spiega chiaramente la condizione del locale spiegate nella sezione note per gli ospiti del file menu_trattoria.md.\n"
+    #     "   - Evita di iniziare con un 'No' categorico se le condizioni permettono l'accesso nel dehors.\n\n"
+    #     "2. ISOLAMENTO RIGHI TABELLA (ALLERGENI):\n"
+    #     "   - Ogni riga della tabella è un piatto INDIPENDENTE. È VIETATO attribuire a un piatto gli allergeni scritti nelle righe adiacenti.\n"
+    #     "   - Analizza ESCLUSIVAMENTE la colonna 'Allergeni' della riga del piatto richiesto.\n\n"
+    #     "3. LOGICA CELIACHIA E GLUTINE:\n"
+    #     "   - Se la colonna 'Allergeni' di una riga contiene la parola 'glutine', quel piatto CONTIENE GLUTINE.\n"
+    #     "   - Un piatto è idoneo ai celiaci / senza glutine SOLO SE ha la dicitura '(senza glutine)' nel nome OPPURE se la colonna Allergeni della sua riga NON contiene 'glutine'.\n"
+    #     "   - Verifica sempre la sezione 'Note per gli ospiti' per eventuali opzioni su richiesta (es. pasta senza glutine).\n\n"
+    #     "4. ZERO ALLUCINAZIONI:\n"
+    #     "   - Se un alimento non è presente (es. pizza, panini), dichiara chiaramente che non è in menu senza inventare alternative."
+    # )
+
+    # system_prompt = (
+    #     "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
+    #     "Rispondi basandoti ESCLUSIVAMENTE sul testo del menu e del regolamento forniti sottostante.\n\n"
+    #     "REGOLE TASSATIVE PER LA LETTURA DELLE TABELLE E NOTE:\n\n"
+    #     "1. ISOLAMENTO RIGIDO DELLE RIGHE (ALLERGENI ED ETICHETTE):\n"
+    #     "   - Ogni riga della tabella rappresenta UN SOLO piatto.\n"
+    #     "   - È VIETATO attribuire le etichette o gli allergeni di una riga a piatti di altre righe.\n"
+    #     "   - Esempio: Il 'Tagliere di salumi e formaggi' NON è vegano; ha 'latte' come allergene.\n"
+    #     "   - Esempio: Le 'Orecchiette alle cime di rapa' contengono 'glutine, pesce (acciughe)'. NON sono senza glutine.\n\n"
+    #     "2. LOGICA CELIACHIA E SENZA GLUTINE:\n"
+    #     # "   - Se la colonna 'Allergeni' di una riga contiene la parola 'glutine', quel piatto CONTIENE GLUTINE.\n"
+    #     # "   - I piatti idonei per celiaci sono SOLO quelli contrassegnati espressamente come '(senza glutine)' nel nome (es. Risotto ai funghi cardoncelli), inoltre leggi le informazioni contenute nelle note per i clienti.\n\n"
+    #     "   - Se la colonna 'Allergeni' di una riga contiene la parola 'glutine', quel piatto CONTIENE GLUTINE.\n"
+    #     "   - Un piatto è idoneo ai celiaci / senza glutine SOLO SE ha la dicitura '(senza glutine)' nel nome OPPURE se la colonna Allergeni della sua riga NON contiene 'glutine'.\n"
+    #     "   - Verifica sempre la sezione 'Note per gli ospiti' per eventuali opzioni su richiesta (es. pasta senza glutine).\n\n"
+    #     "3. CANI E ANIMALI DOMESTICI (TC-03):\n"
+    #     "   - Quando l'utente chiede se è possibile portare un cane/animale, spiega chiaramente la condizione del locale spiegate nella sezione note per gli ospiti del file menu_trattoria.md.\n"
+    #     "   - Evita di iniziare con un 'No' categorico se le condizioni permettono l'accesso nel dehors.\n\n"
+    #     "4. RISPOSTE SPECIFICHE AGLI ALLERGENI:\n"
+    #     "   - Quando viene chiesto se un piatto contiene determinati ingredienti/allergeni, elenca esattamente ciò che è presente nella colonna 'Allergeni' di quella riga (es. per le orecchiette indica che contengono pesce e glutine).\n\n"
+    #     "5. ZERO ALLUCINAZIONI:\n"
+    #     "   - Se un alimento non è nel testo (es. pizza, panini), dichiara chiaramente che non è in menu."
+    # )
+
+    system_prompt = (
+        "Sei l'assistente virtuale della Trattoria Nonna Rosa.\n"
+        "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sul testo del menu e del regolamento forniti nel contesto.\n\n"
+        "REGOLE RIGIDE DI LETTURA E LOGICA (VALIDE PER QUALSIASI MENU):\n\n"
+        "1. LETTURA RIGIDA DELLA COLONNA ALLERGENI:\n"
+        "   - La colonna 'Allergeni' indica gli allergeni PRESENTI nel piatto.\n"
+        "   - Se la colonna 'Allergeni' di una riga contiene una sostanza (es. 'glutine', 'latte', 'pesce'), quel piatto CONTIENE tassativamente quella sostanza.\n"
+        "   - È un errore critico classificare come 'senza [allergene]' un piatto la cui riga riporta quell'allergene nella colonna Allergeni.\n\n"
+        "2. IDENTIFICAZIONE OPZIONI SPECIALI (Celiachia / Vegano / Intolleranze):\n"
+        "   - Considera idonei solo i piatti che riportano l'etichetta esplicita nel nome/descrizione (es. '(senza glutine)', '(vegano)') oppure quelli la cui colonna Allergeni non contiene l'allergene richiesto.\n"
+        "   - Se la colonna Allergeni di un piatto contiene 'glutine', quel piatto CONTIENE GLUTINE.\n"
+        "   - Gli unici piatti idonei per celiaci/senza glutine sono quelli contrassegnati come '(senza glutine)'"
+        "   - Ispeziona SEMPRE sia le tabelle dei piatti sia le note/regolamento generali, in quanto le note possono contenere opzioni su richiesta o supplementi.\n\n"
+        "3. COMPLETEZZA SULLE INFORMAZIONI GENERALI ED ORARI:\n"
+        "   - Quando vengono chiesti orari, regole o condizioni, estrai TUTTI i dettagli presenti nel testo (giorni, turni orari specifici, limitazioni di zona/dehors) senza sintetizzare od omettere cifre e orari prescritti.\n\n"
+        "4. CANI E ANIMALI DOMESTICI:\n"
+        "   - Quando l'utente chiede se è possibile portare un cane/animale, spiega chiaramente la condizione del locale facendo riferimento alle informazioni prensenti nella sezione note per gli ospiti del file menu_trattoria.md.\n"
+        "   - Calibra la tua domanda sulla possibilità o meno di accettare animali in base alle informazioni che trovi nel file menu_trattoria.md.\n\n"
+        "5. DIVIETO ASSOLUTO DI ALLUCINAZIONE:\n"
+        "   - Basa la risposta SOLO su ciò che è scritto nel testo.\n"
+        "   - Se un ingrediente, piatto o regola non è presente nel testo (es. pizza, panini), dichiara chiaramente che non è presente nel menu senza inventare condizioni o alternative non scritte."
+    )
+    
+    user_prompt = (
+        f"--- CONTESTO ESTRATTO DAL MENU ---\n{ctx}\n-----------------------------------\n\n"
+        f"Domanda dell'utente: {state['domanda']}"
+    )
+
+    r = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt)
+    ])
+    return {"risposta": r.content}
+
+def non_so(state: State) -> dict:
+    return {"risposta": "Mi dispiace, non ho trovato questa informazione nel menu della trattoria."}
+
+def gestisci_prenotazione(state: State) -> dict:
+    print("--- [NODO] ESECUZIONE DB (prenotazione) ---")
+    llm_with_tools = llm.bind_tools(tools_db)
+    prompt = (
+        "Sei l'assistente virtuale della Trattoria Nonna Rosa per la gestione delle prenotazioni dei tavoli.\n\n"
+        "GUARDRAIL DI SICUREZZA:\n"
+        "1. NON invocare tool se l'utente non chiede esplicitamente di prenotare un tavolo.\n"
+        "2. Se mancano parametri obbligatori (data YYYY-MM-DD, turno 1/2, persone, nome, telefono), richiedili SENZA eseguire tool."
+    )
+    msg = llm_with_tools.invoke([SystemMessage(content=prompt), HumanMessage(content=state["domanda"])])
+    
+    if msg.tool_calls:
+        esiti = []
+        for call in msg.tool_calls:
+            tool_func = tools_map[call["name"]]
+            esiti.append(tool_func.invoke(call["args"]))
+        
+        risposta_finale = llm.invoke(
+            f"Domanda utente: {state['domanda']}\n"
+            f"Esito operazione Database: {' | '.join(esiti)}\n\n"
+            "Fornisci un riscontro chiaro al cliente."
+        ).content
+        return {"risposta": risposta_finale}
+    
+    return {"risposta": msg.content}
+
+
+# 5. ESECUZIONE GRAFO
+
+def instrada_intento(state: State) -> str:
+    if state["intento"] == "prenotazione":
+        return "gestisci_prenotazione"
+    elif state["intento"] == "menu":
+        return "recupera"
+    return "gestisci_cag"
+
+def instrada_dopo_cag(state: State) -> str:
+    if state.get("esito_cag", False):
+        return END
+    return "recupera"
+
+def instrada_valutazione(state: State) -> str:
+    if state["pertinente"]:
+        return "genera"
+    return "riscrivi" if state.get("tentativi", 0) < 2 else "non_so"
+
+builder = StateGraph(State)
+
+builder.add_node("classifica_intento", classifica_intento)
+builder.add_node("gestisci_cag", gestisci_cag)
+builder.add_node("recupera", recupera)
+builder.add_node("valuta", valuta)
+builder.add_node("riscrivi", riscrivi)
+builder.add_node("genera", genera)
+builder.add_node("non_so", non_so)
+builder.add_node("gestisci_prenotazione", gestisci_prenotazione)
+
+builder.add_edge(START, "classifica_intento")
+builder.add_conditional_edges("classifica_intento", instrada_intento, ["gestisci_cag", "recupera", "gestisci_prenotazione"])
+builder.add_conditional_edges("gestisci_cag", instrada_dopo_cag, [END, "recupera"])
+builder.add_edge("recupera", "valuta")
+builder.add_conditional_edges("valuta", instrada_valutazione, ["genera", "riscrivi", "non_so"])
+builder.add_edge("riscrivi", "recupera")
+builder.add_edge("genera", END)
+builder.add_edge("non_so", END)
+builder.add_edge("gestisci_prenotazione", END)
+
+memory = MemorySaver()
+graph = builder.compile(checkpointer=memory)
+
+
+# 6. BATTERIA DI TEST
+
+if __name__ == "__main__":
+    test_cases = [
+        ("TC-01", "Qual è il numero di telefono e l'indirizzo?", "CAG (FAQ)"),
+        ("TC-02", "Quali sono gli orari di apertura del weekend?", "RAG (Orari Menu)"),
+        ("TC-03", "Posso portare un cane in trattoria?", "RAG (Regole Cani)"),
+        ("TC-04", "Quali primi senza glutine ci sono?", "RAG (Menu SG)"),
+        ("TC-05", "Ci sono piatti vegani tra i dolci o gli antipasti?", "RAG (Menu Vegan)"),
+        ("TC-06", "Le orecchiette alle cime di rapa contengono pesce o lattosio?", "RAG (Allergeni)"),
+        ("TC-07", "Avete la pizza margherita o i panini?", "RAG (Piatto assente)"),
+        ("TC-08", "Vorrei informazioni sulla caparra per i gruppi", "RAG (Acconti)"),
+    ]
+
+    print("==================================================")
+    print("      AVVIO BATTERIA DI TEST CORRETTA             ")
+    print("==================================================\n")
+
+    for test_id, domanda, descrizione in test_cases:
+        config = {"configurable": {"thread_id": f"sessione_{test_id}"}}
+        print(f"[{test_id}] TEST: {descrizione}")
+        print(f"Domanda: \"{domanda}\"")
+        risultato = graph.invoke({"domanda": domanda}, config=config)
+        print(f"Risposta ottenuta:\n{risultato['risposta']}")
+        print("-" * 60 + "\n")

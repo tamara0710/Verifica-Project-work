@@ -77,7 +77,21 @@ def crea_tabelle_complete() -> None:
             (10, 'Chiara Fontana', '3660123456', 'chiara.fontana@email.com');        
             """)
 
+            # --- turni: il PDF ne prevede 4 (gli id 1 e 2 restano compatibili col DB vecchio) ---
+        cur.executemany("INSERT OR IGNORE INTO turni (id, nome, orario) VALUES (?,?,?)", [
+            (1, "Pranzo", "12:30"),
+            (2, "Pranzo", "14:00"),
+            (3, "Cena", "19:30"),
+            (4, "Cena", "21:30")])
 
+        # --- tavoli: sala interna 40 coperti, dehors 20 coperti (include tavoli da 12 e 8
+        #     posti, altrimenti i gruppi da 9 a 12 persone non potrebbero mai prenotare) ---
+        cur.executemany("INSERT OR IGNORE INTO tavoli (id, posti, zona) VALUES (?,?,?)", [
+            (1, 4, "Interno"), (2, 2, "Interno"), (3, 6, "Interno"), (5, 8, "Interno"),
+            (6, 12, "Interno"), (7, 4, "Interno"), (8, 4, "Interno"),      # interno = 40
+            (4, 4, "Dehors"), (9, 2, "Dehors"), (10, 4, "Dehors"), (11, 4, "Dehors"),
+            (12, 6, "Dehors")])  
+        
         # Popolamento completo: 12 tavoli x 4 turni = 48 prenotazioni complessive
         cur.execute("""
             INSERT OR IGNORE INTO prenotazioni (id, cliente_id, tavolo_id, turno_id, data, persone, note, segnala_celiachia, acconto_versato, stato) VALUES
@@ -144,22 +158,7 @@ def crea_tabelle_complete() -> None:
             (46, 10, 10, 4, '2026-11-10', 3, 'Cliente in ritardo di 15 min', 0, 0.00, 'confermata'),
             (47, 1, 11, 4, '2026-11-10', 4, NULL, 0, 0.00, 'annullata'),
             (48, 2, 12, 4, '2026-11-10', 5, 'Richiesta amaro finale', 0, 0.00, 'confermata');
-        """)
-
-            # --- turni: il PDF ne prevede 4 (gli id 1 e 2 restano compatibili col DB vecchio) ---
-        cur.executemany("INSERT OR IGNORE INTO turni (id, nome, orario) VALUES (?,?,?)", [
-            (1, "Pranzo", "12:30"),
-            (2, "Pranzo", "14:00"),
-            (3, "Cena", "19:30"),
-            (4, "Cena", "21:30")])
-
-        # --- tavoli: sala interna 40 coperti, dehors 20 coperti (include tavoli da 12 e 8
-        #     posti, altrimenti i gruppi da 9 a 12 persone non potrebbero mai prenotare) ---
-        cur.executemany("INSERT OR IGNORE INTO tavoli (id, posti, zona) VALUES (?,?,?)", [
-            (1, 4, "Interno"), (2, 2, "Interno"), (3, 6, "Interno"), (5, 8, "Interno"),
-            (6, 12, "Interno"), (7, 4, "Interno"), (8, 4, "Interno"),      # interno = 40
-            (4, 4, "Dehors"), (9, 2, "Dehors"), (10, 4, "Dehors"), (11, 4, "Dehors"),
-            (12, 6, "Dehors")])                                            # dehors = 20
+        """)                                          # dehors = 20
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_prenotazioni_data_turno ON prenotazioni(data, turno_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_prenotazioni_tavolo_data ON prenotazioni(tavolo_id, data)")

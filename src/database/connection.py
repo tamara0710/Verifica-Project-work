@@ -13,7 +13,7 @@ DB_PATH = Path(__file__).resolve().parent / "trattoria.db"
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=20.0, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA journal_mode = DELETE;")   # niente file -wal: il .db contiene sempre tutte le prenotazioni
     return conn
 
 

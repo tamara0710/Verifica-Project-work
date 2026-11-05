@@ -933,18 +933,19 @@ def gestisci_prenotazione(state: State, *, store: Optional[BaseStore] = None) ->
             # Azzeriamo eventuale testo duplicato dell'LLM prima dell'interrupt
             msg.content = "" 
 
+            ####### STO NASCONDENDO QUESTO CODICE
             # Eseguiamo l'interrupt con i dati fusi e corretti
-            conferma = interrupt({
-                "domanda": "Confermi la prenotazione?",
-                "nome": argomenti.get("nome", ""),
-                "telefono": argomenti.get("telefono", telefono),
-                "data": argomenti.get("data", ""),
-                "turno": "Pranzo (12:30)" if argomenti.get("turno_id") == 1 else "Cena (19:30)",
-                "persone": argomenti.get("persone")
-            })
+            # conferma = interrupt({
+            #     "domanda": "Confermi la prenotazione?",
+            #     "nome": argomenti.get("nome", ""),
+            #     "telefono": argomenti.get("telefono", telefono),
+            #     "data": argomenti.get("data", ""),
+            #     "turno": "Pranzo (12:30)" if argomenti.get("turno_id") == 1 else "Cena (19:30)",
+            #     "persone": argomenti.get("persone")
+            # })
 
-            if not conferma:
-                return {"risposta": "Prenotazione annullata come richiesto. Se hai bisogno di altro, sono qui!", "prenotazione_in_corso": {}}
+            # if not conferma:
+            #     return {"risposta": "Prenotazione annullata come richiesto. Se hai bisogno di altro, sono qui!", "prenotazione_in_corso": {}}
 
         # === 5. COERENZA PARAMETRI ANCHE PER VERIFICA_DISPONIBILITA ===
         elif nome_tool == "verifica_disponibilita":

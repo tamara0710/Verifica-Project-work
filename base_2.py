@@ -440,58 +440,102 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     # TEST 1: PRENOTAZIONE CON INTERRUPT & SQLITESAVER (Obbligatori + Facoltativo SqliteSaver)
     # ---------------------------------------------------------
-    config_1 = {"configurable": {"thread_id": "sessione_prenotazione_1"}}
-    domanda_1 = "Ciao, mi chiamo Cristiano Ronaldo, voglio prenotare un tavolo per 5 persone per il 2026-11-12 a pranzo (turno 1), il mio numero è 347557777, tra noi c'è una persona celiaca"
-    print(f"\n[TEST 1] PRENOTAZIONE CON INTERRUPT & MEMORIZZAZIONE ALLERGIE")
-    print(f"Domanda: \"{domanda_1}\"")
+    # config_1 = {"configurable": {"thread_id": "sessione_prenotazione_1"}}
+    # domanda_1 = "Ciao, mi chiamo Cristiano Ronaldo, voglio prenotare un tavolo per 5 persone per il 2026-11-12 a pranzo (turno 1), il mio numero è 347557777, tra noi c'è una persona celiaca"
+    # print(f"\n[TEST 1] PRENOTAZIONE CON INTERRUPT & MEMORIZZAZIONE ALLERGIE")
+    # print(f"Domanda: \"{domanda_1}\"")
     
-    r1 = graph.invoke({"domanda": domanda_1}, config=config_1)
-    stato_1 = graph.get_state(config_1)
+    # r1 = graph.invoke({"domanda": domanda_1}, config=config_1)
+    # stato_1 = graph.get_state(config_1)
     
-    if stato_1.next:
-        dati_interrupt = stato_1.tasks[0].interrupts[0].value
-        print("\n" + "="*50)
-        print("⏸️  INTERRUPT ATTIVATO (Richiesta conferma)")
-        print("="*50)
-        print(f"📋 Dettagli: {dati_interrupt}")
-        print("\n✅ Risposta utente all'interrupt: 'True' (Confermo)")
-        print("-" * 50)
+    # if stato_1.next:
+    #     dati_interrupt = stato_1.tasks[0].interrupts[0].value
+    #     print("\n" + "="*50)
+    #     print("⏸️  INTERRUPT ATTIVATO (Richiesta conferma)")
+    #     print("="*50)
+    #     print(f"📋 Dettagli: {dati_interrupt}")
+    #     print("\n✅ Risposta utente all'interrupt: 'True' (Confermo)")
+    #     print("-" * 50)
         
-        r1 = graph.invoke(Command(resume=True), config=config_1)
+    #     r1 = graph.invoke(Command(resume=True), config=config_1)
 
-    print(f"\n💬 Risposta finale Test 1:\n{r1['risposta']}\n")
+    # print(f"\n💬 Risposta finale Test 1:\n{r1['risposta']}\n")
 
     # ---------------------------------------------------------
     # TEST 2: STORE CROSS-CONVERSAZIONE (Facoltativo +5 pt)
     # Lo stesso cliente fa una nuova domanda in un Thread/Sessione DIVERSA.
     # Il grafo ricorderà che è celiaco grazie allo Store!
     # ---------------------------------------------------------
-    config_2 = {"configurable": {"thread_id": "sessione_nuova_thread_2"}}
-    domanda_2 = "Ciao sono Cristiano Ronaldo (tel 347557777), quali primi mi consigliate?"
-    print("\n" + "=" * 60)
-    print("[TEST 2] MEMORIA STORE CROSS-CONVERSAZIONE (Nuovo Thread)")
-    print(f"Domanda: \"{domanda_2}\"")
-    r2 = graph.invoke({"domanda": domanda_2}, config=config_2)
-    print(f"\n💬 Risposta Test 2 (con memoria allergie dallo Store):\n{r2['risposta']}\n")
+    # config_2 = {"configurable": {"thread_id": "sessione_nuova_thread_2"}}
+    # domanda_2 = "Ciao sono Cristiano Ronaldo (tel 347557777), quali primi mi consigliate?"
+    # print("\n" + "=" * 60)
+    # print("[TEST 2] MEMORIA STORE CROSS-CONVERSAZIONE (Nuovo Thread)")
+    # print(f"Domanda: \"{domanda_2}\"")
+    # r2 = graph.invoke({"domanda": domanda_2}, config=config_2)
+    # print(f"\n💬 Risposta Test 2 (con memoria allergie dallo Store):\n{r2['risposta']}\n")
 
     # ---------------------------------------------------------
     # TEST 3: REGOLA ACCONTO GRUPPI > 8 PERSONE (Facoltativo +5 pt)
     # ---------------------------------------------------------
-    config_3 = {"configurable": {"thread_id": "sessione_acconto_gruppi"}}
-    domanda_3 = "Vorrei informazioni sulla caparra e l'acconto per i gruppi di 10 persone"
-    print("\n" + "=" * 60)
-    print("[TEST 3] REGOLA ACCONTO GRUPPI > 8 PERSONE (da PDF)")
-    print(f"Domanda: \"{domanda_3}\"")
-    r3 = graph.invoke({"domanda": domanda_3}, config=config_3)
-    print(f"\n💬 Risposta Test 3:\n{r3['risposta']}\n")
+    # config_3 = {"configurable": {"thread_id": "sessione_acconto_gruppi"}}
+    # domanda_3 = "Vorrei informazioni sulla caparra e l'acconto per i gruppi di 10 persone"
+    # print("\n" + "=" * 60)
+    # print("[TEST 3] REGOLA ACCONTO GRUPPI > 8 PERSONE (da PDF)")
+    # print(f"Domanda: \"{domanda_3}\"")
+    # r3 = graph.invoke({"domanda": domanda_3}, config=config_3)
+    # print(f"\n💬 Risposta Test 3:\n{r3['risposta']}\n")
+
+    # ---------------------------------------------------------
+    # TEST : 
+    # ---------------------------------------------------------
+    # config_test = {"configurable": {"thread_id": "test_dolci_vegani"}}
+    # domanda_test = "Quali dolci sono vegani?"
+
+    # print(f"Domanda: {domanda_test}")
+    # risultato = graph.invoke({"domanda": domanda_test}, config=config_test)
+    # print(f"Risposta: {risultato['risposta']}")
+    
+    #  # ---------------------------------------------------------
+    # # TEST : 
+    # # ---------------------------------------------------------
+    # config_test = {"configurable": {"thread_id": "test_primi_senza_glutine"}}
+    # domanda_test = "Quali primi sono senza glutine?"
+
+    # print(f"Domanda: {domanda_test}")
+    # risultato = graph.invoke({"domanda": domanda_test}, config=config_test)
+    # print(f"Risposta: {risultato['risposta']}")
+
+    # ---------------------------------------------------------
+    # TEST : 
+    # ---------------------------------------------------------
+    # config_test = {"configurable": {"thread_id": "test_piatti_vegetariani"}}
+    # domanda_test = "Nel menu sono presenti piatti vegetariani?"
+
+    # print(f"Domanda: {domanda_test}")
+    # risultato = graph.invoke({"domanda": domanda_test}, config=config_test)
+    # print(f"Risposta: {risultato['risposta']}")
+
+    # ---------------------------------------------------------
+    # TEST : 
+    # ---------------------------------------------------------
+    config_test = {"configurable": {"thread_id": "test_cani"}}
+    domanda_test = "Possiamo portare un cane in trattoria?"
+
+    print(f"Domanda: {domanda_test}")
+    risultato = graph.invoke({"domanda": domanda_test}, config=config_test)
+    print(f"Risposta: {risultato['risposta']}")
 
     # ---------------------------------------------------------
     # TEST 4: STREAMING DEI TOKEN IN OUTPUT (Facoltativo +5 pt)
     # ---------------------------------------------------------
-    config_4 = {"configurable": {"thread_id": "sessione_streaming"}}
-    domanda_4 = "Qual è il numero di telefono e l'indirizzo della trattoria?"
-    print("\n" + "=" * 60)
-    print("[TEST 4] STREAMING TOKEN IN TEMPO REALE")
-    print(f"Domanda: \"{domanda_4}\"")
-    stream_risposta(graph, {"domanda": domanda_4}, config=config_4)
-    print("\n🎉 TUTTI I TEST DELLA TRACCIA COMPLETATI CON SUCCESSO!")
+    # config_4 = {"configurable": {"thread_id": "sessione_streaming"}}
+    # domanda_4 = "Qual è il numero di telefono e l'indirizzo della trattoria?"
+    # print("\n" + "=" * 60)
+    # print("[TEST 4] STREAMING TOKEN IN TEMPO REALE")
+    # print(f"Domanda: \"{domanda_4}\"")
+    # stream_risposta(graph, {"domanda": domanda_4}, config=config_4)
+    # print("\n🎉 TUTTI I TEST DELLA TRACCIA COMPLETATI CON SUCCESSO!")
+
+
+
+    

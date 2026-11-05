@@ -42,12 +42,6 @@ def crea_tabelle_complete() -> None:
             nome TEXT NOT NULL,
             orario TEXT NOT NULL)""")
 
-        for tabella in ("antipasti", "primi", "secondi", "dolci"):
-            cur.execute(f"""CREATE TABLE IF NOT EXISTS {tabella} (
-                codice TEXT PRIMARY KEY,
-                nome TEXT NOT NULL,
-                prezzo REAL NOT NULL CHECK (prezzo >= 0),
-                allergeni TEXT NOT NULL)""")
 
         cur.execute("""CREATE TABLE IF NOT EXISTS prenotazioni (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,32 +63,94 @@ def crea_tabelle_complete() -> None:
         _aggiungi_colonna_se_manca(cur, "prenotazioni", "segnala_celiachia", "INTEGER NOT NULL DEFAULT 0")
         _aggiungi_colonna_se_manca(cur, "prenotazioni", "acconto_versato", "REAL DEFAULT 0.0")
 
-        # --- menù (dal PDF) ---
-        cur.executemany("INSERT OR IGNORE INTO antipasti VALUES (?,?,?,?)", [
-            ("A01", "Tagliere di salumi e formaggi pugliesi", 14.0, "latte"),
-            ("A02", "Burrata con pomodorini e crostini", 10.0, "latte, glutine"),
-            ("A03", "Polpo arrosto su crema di fave", 13.0, "molluschi"),
-            ("A04", "Verdure grigliate (vegano)", 8.0, "-")])
-        cur.executemany("INSERT OR IGNORE INTO primi VALUES (?,?,?,?)", [
-            ("P01", "Orecchiette alle cime di rapa", 11.0, "glutine, pesce (acciughe)"),
-            ("P02", "Spaghetti all'assassina", 12.0, "glutine"),
-            ("P03", "Cavatelli con cozze e fagioli", 14.0, "glutine, molluschi"),
-            ("P04", "Risotto ai funghi cardoncelli (senza glutine)", 13.0, "latte")])
-        cur.executemany("INSERT OR IGNORE INTO secondi VALUES (?,?,?,?)", [
-            ("S01", "Bombette di Cisternino", 15.0, "latte"),
-            ("S02", "Orata al forno con patate", 18.0, "pesce"),
-            ("S03", "Polpette al sugo della nonna", 13.0, "uova, glutine, latte"),
-            ("S04", "Parmigiana di melanzane (vegetariano)", 12.0, "latte, uova, glutine")])
-        cur.executemany("INSERT OR IGNORE INTO dolci VALUES (?,?,?,?)", [
-            ("D01", "Pasticciotto leccese", 5.0, "glutine, uova, latte"),
-            ("D02", "Tiramisù", 6.0, "uova, latte, glutine"),
-            ("D03", "Sorbetto al limone (vegano)", 4.0, "-")])
+        cur.execute("""
+            INSERT OR IGNORE INTO clienti (id, nome, telefono, email) VALUES
+            (1, 'Mario Rossi', '3331234567', 'mario.rossi@email.com'),
+            (2, 'Giulia Bianchi', '3382345678', 'giulia.bianchi@email.com'),
+            (3, 'Luca Verdi', '3403456789', 'luca.verdi@email.com'),
+            (4, 'Francesca Russo', '3474567890', 'francesca.russo@email.com'),
+            (5, 'Alessandro Ferrari', '3205678901', 'alessandro.ferrari@email.com'),
+            (6, 'Elena Esposito', '3396789012', 'elena.esposito@email.com'),
+            (7, 'Marco Romano', '3287890123', 'marco.romano@email.com'),
+            (8, 'Sara Gallo', '3318901234', 'sara.gallo@email.com'),
+            (9, 'Davide Costa', '3459012345', 'davide.costa@email.com'),
+            (10, 'Chiara Fontana', '3660123456', 'chiara.fontana@email.com');        
+            """)
 
-        # --- turni: il PDF ne prevede 4 (gli id 1 e 2 restano compatibili col DB vecchio) ---
+
+        # Popolamento completo: 12 tavoli x 4 turni = 48 prenotazioni complessive
+        cur.execute("""
+            INSERT OR IGNORE INTO prenotazioni (id, cliente_id, tavolo_id, turno_id, data, persone, note, segnala_celiachia, acconto_versato, stato) VALUES
+            -- ============================================================
+            -- TURN 1: Pranzo 12:30 (id_turno = 1)
+            -- ============================================================
+            (1, 1, 1, 1, '2026-11-10', 4, 'Preferenza vicino alla finestra', 0, 0.00, 'confermata'),
+            (2, 2, 2, 1, '2026-11-10', 2, NULL, 0, 0.00, 'confermata'),
+            (3, 7, 3, 1, '2026-11-10', 5, 'Pranzo di lavoro', 0, 0.00, 'confermata'),
+            (4, 3, 4, 1, '2026-11-10', 3, 'Tavolo fuori', 1, 10.00, 'confermata'),
+            (5, 4, 5, 1, '2026-11-10', 6, 'Seggiolone per bambino', 0, 20.00, 'confermata'),
+            (6, 6, 6, 1, '2026-11-10', 10, 'Evento aziendale', 0, 50.00, 'confermata'),
+            (7, 5, 7, 1, '2026-11-10', 4, NULL, 0, 0.00, 'in attesa'),
+            (8, 8, 8, 1, '2026-11-10', 4, 'Cliente abituale', 0, 0.00, 'confermata'),
+            (9, 9, 9, 1, '2026-11-10', 2, 'Dehors soleggiato', 0, 0.00, 'confermata'),
+            (10, 10, 10, 1, '2026-11-10', 4, NULL, 0, 0.00, 'confermata'),
+            (11, 1, 11, 1, '2026-11-10', 3, NULL, 1, 0.00, 'confermata'),
+            (12, 2, 12, 1, '2026-11-10', 6, 'Famiglia con passeggino', 0, 15.00, 'confermata'),
+
+            -- ============================================================
+            -- TURN 2: Pranzo 14:00 (id_turno = 2)
+            -- ============================================================
+            (13, 6, 1, 2, '2026-11-10', 3, NULL, 0, 0.00, 'confermata'),
+            (14, 3, 2, 2, '2026-11-10', 2, 'Pranzo veloce', 0, 0.00, 'confermata'),
+            (15, 7, 3, 2, '2026-11-10', 5, 'Compleanno in famiglia', 1, 25.00, 'confermata'),
+            (16, 4, 4, 2, '2026-11-10', 4, 'Vicino all ingresso dehors', 0, 0.00, 'confermata'),
+            (17, 5, 5, 2, '2026-11-10', 7, 'Riunione team', 0, 30.00, 'confermata'),
+            (18, 1, 6, 2, '2026-11-10', 11, 'Tavolata festeggiamenti', 0, 60.00, 'confermata'),
+            (19, 2, 7, 2, '2026-11-10', 4, NULL, 0, 0.00, 'in attesa'),
+            (20, 8, 8, 2, '2026-11-10', 4, NULL, 0, 0.00, 'confermata'),
+            (21, 9, 9, 2, '2026-11-10', 2, 'Coppia all aperto', 0, 0.00, 'confermata'),
+            (22, 10, 10, 2, '2026-11-10', 4, NULL, 0, 0.00, 'annullata'),
+            (23, 7, 11, 2, '2026-11-10', 4, 'Zona Dehors tranquilla', 0, 0.00, 'confermata'),
+            (24, 8, 12, 2, '2026-11-10', 5, 'Menu degustazione', 1, 20.00, 'confermata'),
+
+            -- ============================================================
+            -- TURN 3: Cena 19:30 (id_turno = 3)
+            -- ============================================================
+            (25, 1, 1, 3, '2026-11-10', 4, 'Tavolo tranquillo', 0, 0.00, 'confermata'),
+            (26, 2, 2, 3, '2026-11-10', 2, NULL, 1, 10.00, 'confermata'),
+            (27, 4, 3, 3, '2026-11-10', 6, 'Cena di famiglia', 0, 0.00, 'confermata'),
+            (28, 8, 4, 3, '2026-11-10', 4, 'Dehors riscaldato', 0, 0.00, 'confermata'),
+            (29, 3, 5, 3, '2026-11-10', 8, 'Gruppo amici - Max capienza', 0, 40.00, 'confermata'),
+            (30, 9, 6, 3, '2026-11-10', 9, 'Compleanno 30 anni', 1, 50.00, 'confermata'),
+            (31, 4, 7, 3, '2026-11-10', 4, NULL, 0, 0.00, 'confermata'),
+            (32, 10, 8, 3, '2026-11-10', 3, NULL, 0, 0.00, 'confermata'),
+            (33, 7, 9, 3, '2026-11-10', 2, 'Anniversario', 0, 15.00, 'confermata'),
+            (34, 6, 10, 3, '2026-11-10', 4, NULL, 0, 0.00, 'in attesa'),
+            (35, 5, 11, 3, '2026-11-10', 4, 'Zona Dehors', 0, 0.00, 'confermata'),
+            (36, 6, 12, 3, '2026-11-10', 6, 'Richiesta torta', 1, 30.00, 'confermata'),
+
+            -- ============================================================
+            -- TURN 4: Cena 21:30 (id_turno = 4)
+            -- ============================================================
+            (37, 1, 1, 4, '2026-11-10', 4, 'Cena tarda post-cinema', 0, 0.00, 'confermata'),
+            (38, 5, 2, 4, '2026-11-10', 2, NULL, 0, 0.00, 'confermata'),
+            (39, 7, 3, 4, '2026-11-10', 6, NULL, 0, 0.00, 'confermata'),
+            (40, 8, 4, 4, '2026-11-10', 4, 'Dehors riscaldato', 0, 0.00, 'confermata'),
+            (41, 2, 5, 4, '2026-11-10', 7, 'Cena di lavoro', 0, 35.00, 'confermata'),
+            (42, 6, 6, 4, '2026-11-10', 12, 'Tavolata laurea', 1, 60.00, 'confermata'),
+            (43, 3, 7, 4, '2026-11-10', 4, NULL, 0, 0.00, 'confermata'),
+            (44, 9, 8, 4, '2026-11-10', 4, NULL, 1, 20.00, 'confermata'),
+            (45, 4, 9, 4, '2026-11-10', 2, NULL, 0, 0.00, 'confermata'),
+            (46, 10, 10, 4, '2026-11-10', 3, 'Cliente in ritardo di 15 min', 0, 0.00, 'confermata'),
+            (47, 1, 11, 4, '2026-11-10', 4, NULL, 0, 0.00, 'annullata'),
+            (48, 2, 12, 4, '2026-11-10', 5, 'Richiesta amaro finale', 0, 0.00, 'confermata');
+        """)
+
+            # --- turni: il PDF ne prevede 4 (gli id 1 e 2 restano compatibili col DB vecchio) ---
         cur.executemany("INSERT OR IGNORE INTO turni (id, nome, orario) VALUES (?,?,?)", [
             (1, "Pranzo", "12:30"),
-            (2, "Cena", "19:30"),
-            (3, "Pranzo", "14:00"),
+            (2, "Pranzo", "14:00"),
+            (3, "Cena", "19:30"),
             (4, "Cena", "21:30")])
 
         # --- tavoli: sala interna 40 coperti, dehors 20 coperti (include tavoli da 12 e 8
